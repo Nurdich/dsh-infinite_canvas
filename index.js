@@ -20,9 +20,25 @@ import {
   DEFAULT_BASE_URL,
   understandFromRequest,
   planMusicVideoShots,
+  planMusicVideoPackage,
+  stampGeneration,
+  snapGenerationDuration,
+  mergeCreative,
+  analysisIsThin,
+  llmCreativeUserPrompt,
+  extractJsonObject,
+  patchPackageShot,
+  applyContinuity,
+  buildRemixPackage,
+  detectRemixCapabilities,
+  describeFrameFromRequest,
+  missingSceneRefs,
+  reviseShotPrompt,
+  confirmShot,
   groupShotsForClips,
   analysisDigest,
   AUDIO_ANALYSIS_SCHEMA,
+  AUDIO_ENDPOINT_PRESETS,
 } from './audio-drive.js';
 import { initPackBase, packInventory, allowedIds } from './skill-pack-loader.js';
 import { buildSkillPack, SKILL_CATALOG, renderInventory, renderProfile } from './skill-pack.js';
@@ -2510,11 +2526,11 @@ function canvasCreateNode(args) {
   } else if (type === 'audio') {
     node = agentNode('text', '', pos.x, pos.y, label || '音频');
     node.type = 'audio';
-    node.w = 360; node.h = 360;
+    node.w = 920; node.h = 600;
     node.data = {
       ...node.data,
       status: 'idle', error: null, assetId: (args && args.assetId) ? String(args.assetId) : null,
-      analysis: null, audioModel: '',
+      analysis: null, audioModel: '', styleText: '', mvPackage: null,
     };
   } else if (type === 'script') {
     node = agentNode('script', prompt, pos.x, pos.y, label || defaultLabel(prompt));
@@ -3051,7 +3067,7 @@ const PORT_TABLE = {
   'finalcut': { inputs: [{ id: 'in', kind: 'video' }, { id: 'music', kind: 'audio' }], outputs: [] },
   'group': { inputs: [], outputs: [] },
 };
-const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop']);
+const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop', 'in']);
 /** Agent 改动了项目文档：记一次性信号，让画布在几秒内拉回合并（否则画布上看不到 Agent 的改动）。
  *  canvasId 记录是哪个画布被改（缺省/默认画布 = null），客户端只刷新当前画布。 */
 function markDocChanged(projectId, canvasId) {
@@ -3484,7 +3500,259 @@ async function canvasAnalyzeAudio(args) {
       + ' 下一步 canvas_music_video。',
   };
 }
-function canvasMusicVideo(args) {
+function upsertMvNode(doc, mvKey, type, label, data) {
+  const existing = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === mvKey);
+  const payload = { ...(data || {}), label: String(label || '').slice(0, 40), mvKey };
+  if (existing) {
+    existing.type = type;
+    existing.data = { ...(existing.data || {}), ...payload };
+    return existing;
+  }
+  const pos = nextNodePos(doc, type);
+  const node = agentNode('text', '', pos.x, pos.y, payload.label || type);
+  node.type = type;
+  if (type === 'image' || type === 'video') {
+    const sz = mediaNodeSize((payload.ratio) || '16:9', false);
+    node.w = sz.w;
+    node.h = sz.h;
+  } else {
+    node.w = 360;
+    node.h = 360;
+  }
+  node.data = { status: 'idle', error: null, ...payload };
+  doc.nodes[node.id] = node;
+  return node;
+}
+function sceneFingerprint(sc) {
+  return (sc.shots || []).map((s) => [s.startSec, s.endSec, s.duration, s.videoPrompt, s.imagePrompt, s.visual, s.camera].join('|')).join('\n');
+}
+function absorbMvNodes(doc, audio) {
+  const pkg = audio && audio.data && audio.data.mvPackage;
+  if (!pkg || !Array.isArray(pkg.scenes)) return;
+  for (const n of Object.values(doc.nodes || {})) {
+    if (!n || !n.data || n.data.mvFrom !== audio.id) continue;
+    if (n.type === 'video') {
+      const sc = pkg.scenes[n.data.mvIndex];
+      if (!sc) continue;
+      const gen = sc.gen || {};
+      let status = gen.status || 'idle';
+      if (n.data.status === 'running') status = 'generating';
+      else if (n.data.status === 'error') status = 'failed';
+      else if (n.data.mvStale && n.data.assetId) status = 'stale';
+      else if (n.data.assetId) status = 'done';
+      sc.gen = {
+        ...gen,
+        status,
+        stale: status === 'stale',
+        assetId: n.data.assetId || null,
+        actualSec: n.data.actualSec == null ? (gen.actualSec || null) : n.data.actualSec,
+        history: Array.isArray(n.data.history) ? n.data.history.slice(-8) : (gen.history || []),
+        requestSec: gen.requestSec,
+        slotSec: sc.duration,
+        warn: n.data.genWarn || gen.warn || '',
+      };
+    }
+    if (n.type === 'storyboard' && Number.isInteger(n.data.mvIndex) && pkg.scenes[n.data.mvIndex] && Array.isArray(n.data.shots)) {
+      const sc = pkg.scenes[n.data.mvIndex];
+      const changed = JSON.stringify(n.data.shots) !== JSON.stringify(sc.shots);
+      if (changed) {
+        sc.shots = n.data.shots;
+        if (sc.gen && sc.gen.assetId) { sc.gen.stale = true; sc.gen.status = 'stale'; }
+      }
+    }
+  }
+  stampConsistency(doc, pkg);
+  for (const n of Object.values(doc.nodes || {})) {
+    if (!n || !n.data || n.data.mvFrom !== (audio && audio.id) || n.type !== 'image' || !n.data.assetId) continue;
+    const locs = pkg.locations || [];
+    const main = locs.find((l) => l.name === n.data.label);
+    if (main) main.hasMain = true;
+    const multi = locs.find((l) => (l.name + '·多视角') === n.data.label);
+    if (multi) multi.hasMultiView = true;
+  }
+}
+function stampConsistency(doc, pkg) {
+  for (const sc of (pkg && pkg.scenes) || []) {
+    const warnings = storyboardConsistencyWarnings(doc.bible || {}, sc.shots || [], []);
+    const mismatch = !!(sc.gen && sc.gen.actualSec != null && Math.abs(Number(sc.gen.actualSec) - Number(sc.duration)) > 0.45);
+    if (mismatch && sc.gen && !String(sc.gen.warn || '').includes('成片时长')) {
+      sc.gen.warn = (sc.gen.warn ? sc.gen.warn + '；' : '') + '成片时长 ' + sc.gen.actualSec + 's，槽位 ' + sc.duration + 's';
+    }
+    sc.consistency = { warnings, drift: warnings.length > 0 || mismatch };
+  }
+}
+function projectSceneToNodes(doc, audio, sceneIndex) {
+  const pkg = audio.data.mvPackage;
+  const sc = pkg && pkg.scenes && pkg.scenes[sceneIndex];
+  if (!sc) return;
+  const from = audio.id;
+  const sb = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === 'mv:' + from + ':sb:' + sceneIndex);
+  const video = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === 'mv:' + from + ':vid:' + sceneIndex);
+  const fp = sceneFingerprint(sc);
+  if (sb) sb.data.shots = sc.shots;
+  if (video) {
+    video.data.duration = (sc.gen && sc.gen.requestSec) || video.data.duration;
+    video.data.editDuration = sc.duration;
+    video.data.mvFp = fp;
+    if (video.data.assetId) video.data.mvStale = true;
+    if (sc.gen) sc.gen.stale = !!video.data.assetId;
+  }
+}
+function mergeBibleLists(base, incoming) {
+  const out = Array.isArray(base) ? base.map((x) => ({ ...x })) : [];
+  for (const item of incoming || []) {
+    const name = String((item && item.name) || '').trim();
+    if (!name) continue;
+    const i = out.findIndex((x) => String(x.name).trim() === name);
+    const row = { name, desc: String((item && item.desc) || '').slice(0, 2000), assetIds: (i >= 0 && out[i].assetIds) || [] };
+    if (i >= 0) out[i] = { ...out[i], ...row, assetIds: out[i].assetIds || [] };
+    else out.push(row);
+  }
+  return out;
+}
+/** 把 MV 成片包铺到画布：每场一个分镜表 + 视频，参考图，尾帧衔接，成片接原曲。 */
+function layMusicVideo(doc, audio, pkg) {
+  const from = audio.id;
+  const owned = Object.values(doc.nodes || {}).filter((n) => n && n.data && n.data.mvFrom === from);
+  const ownedIds = new Set(owned.map((n) => n.id));
+  doc.edges = (doc.edges || []).filter((e) => !ownedIds.has(e.fromNode) && !ownedIds.has(e.toNode));
+  const refNodes = [];
+  const addRef = (kind, item, index) => {
+    const node = upsertMvNode(doc, 'mv:' + from + ':' + kind + ':' + index, 'image', item.name, {
+      mvFrom: from, prompt: item.imagePrompt || item.desc || item.name,
+      assetId: null, ratio: '16:9', size: '2K', imageCount: 1, status: 'idle',
+    });
+    refNodes.push(node);
+    return node;
+  };
+  (pkg.characters || []).forEach((item, i) => addRef('char', item, i));
+  (pkg.locations || []).forEach((item, i) => {
+    addRef('loc', { ...item, imagePrompt: item.mainPrompt || item.imagePrompt }, i);
+    upsertMvNode(doc, 'mv:' + from + ':locmv:' + i, 'image', item.name + '·多视角', {
+      mvFrom: from, prompt: item.multiViewPrompt || item.imagePrompt || item.name,
+      ratio: '16:9', size: '2K', imageCount: 1,
+    });
+  });
+  (pkg.props || []).forEach((item, i) => addRef('prop', item, i));
+  const videos = [];
+  const boards = [];
+  (pkg.scenes || []).forEach((sc, si) => {
+    const sb = upsertMvNode(doc, 'mv:' + from + ':sb:' + si, 'storyboard', 'MV ' + sc.title, {
+      mvFrom: from, mvIndex: si, status: 'done', aiStatus: 'idle', aiError: null,
+      shots: sc.shots, segMaxSeconds: 15, warnings: [], script: '', requirement: pkg.treatment && pkg.treatment.style || '',
+    });
+    boards.push(sb);
+    const kf = upsertMvNode(doc, 'mv:' + from + ':kf:' + si, 'image', sc.title + ' 关键帧', {
+      mvFrom: from, mvIndex: si,
+      prompt: (sc.shots[0] && sc.shots[0].imagePrompt) || sc.title,
+      assetId: null, ratio: '16:9', size: '2K', imageCount: 1, status: 'idle',
+    });
+    const fp = sceneFingerprint(sc);
+    const prevVid = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === 'mv:' + from + ':vid:' + si);
+    const oldFp = prevVid && prevVid.data && prevVid.data.mvFp;
+    const oldAsset = prevVid && prevVid.data && prevVid.data.assetId;
+    const video = upsertMvNode(doc, 'mv:' + from + ':vid:' + si, 'video', 'MV ' + sc.title, {
+      mvFrom: from, mvIndex: si, prompt: '',
+      duration: (sc.gen && sc.gen.requestSec) || Math.max(4, Math.round(sc.duration || 5)),
+      editDuration: sc.duration,
+      resolution: '720P', ratio: '16:9',
+      mvFp: fp,
+      mvStale: !!(oldAsset && oldFp && oldFp !== fp) || !!(sc.gen && sc.gen.stale),
+    });
+    if (video.data.mvStale && sc.gen) { sc.gen.stale = true; sc.gen.status = 'stale'; sc.gen.assetId = oldAsset || sc.gen.assetId; }
+    videos.push(video);
+    if (sc.keep) video.data.skipGen = true;
+    connectEdge(doc, audio.id, sb.id, 'analysis', 'music');
+    connectEdge(doc, sb.id, video.id, 'out', 'prompt');
+    connectEdge(doc, kf.id, video.id, 'out', 'ref');
+    const want = new Set([].concat(sc.refs && sc.refs.characters || [], sc.refs && sc.refs.locations || [], sc.refs && sc.refs.props || []));
+    for (const ref of refNodes) {
+      if (!want.size || want.has(ref.data.label)) connectEdge(doc, ref.id, video.id, 'out', 'ref');
+    }
+    for (const name of (sc.refs && sc.refs.locations) || []) {
+      const mv = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.label === name + '·多视角' && n.data.mvFrom === from);
+      if (mv) connectEdge(doc, mv.id, video.id, 'out', 'ref');
+    }
+    const missingMain = (sc.refs && sc.refs.locations || []).filter((name) => {
+      const loc = (pkg.locations || []).find((l) => l.name === name);
+      return loc && !loc.hasMain;
+    });
+    video.data.refBlocked = missingMain.length ? ('场景「' + missingMain[0] + '」还没有主图') : '';
+    if (sc.sourceKeyframeAssetId) {
+      const src = upsertMvNode(doc, 'mv:' + from + ':src:' + si, 'image', sc.title + ' 原镜', {
+        mvFrom: from, mvIndex: si, assetId: sc.sourceKeyframeAssetId, status: 'done', prompt: sc.sourceNote || '',
+      });
+      connectEdge(doc, src.id, kf.id, 'out', 'ref');
+      connectEdge(doc, src.id, video.id, 'out', 'ref');
+    }
+    const continuous = sc.join === 'continuous' || (sc.join == null && sc.continued);
+    if (si > 0) {
+      connectEdge(doc, boards[si - 1].id, sb.id, 'tail', 'prev');
+      if (continuous) connectEdge(doc, videos[si - 1].id, video.id, 'tailpick', 'frame');
+      else connectEdge(doc, kf.id, video.id, 'out', 'frame');
+    } else {
+      connectEdge(doc, kf.id, video.id, 'out', 'frame');
+    }
+  });
+  const cut = upsertMvNode(doc, 'mv:' + from + ':cut', 'finalcut', 'MV 成片', {
+    mvFrom: from, status: 'idle', resolution: '720P', ratio: '16:9', transition: 'none',
+    progress: null, assetId: null, subs: {}, keepAudio: false,
+    burnSubtitles: false,
+    subtitleTrack: Array.isArray(pkg.subtitleTrack) ? pkg.subtitleTrack : [],
+    timelineLinked: true,
+    soundtrackAssetId: audio.data && audio.data.assetId || null,
+  });
+  for (const video of videos) {
+    const sc = (pkg.scenes || [])[videos.indexOf(video)];
+    if (sc && sc.keep) continue;
+    connectEdge(doc, video.id, cut.id, 'out', 'in');
+  }
+  stampConsistency(doc, pkg);
+  connectEdge(doc, audio.id, cut.id, 'out', 'music');
+  const bible = normalizeBible(doc.bible || {});
+  const asEntries = (list) => (list || []).map((x) => ({ name: x.name, desc: x.desc || x.imagePrompt || '' }));
+  doc.bible = normalizeBible({
+    ...bible,
+    worldview: (pkg.treatment && pkg.treatment.logline) || bible.worldview,
+    style: (pkg.treatment && pkg.treatment.style) || bible.style,
+    styleAnchor: (pkg.treatment && pkg.treatment.styleAnchor) || bible.styleAnchor,
+    characters: mergeBibleLists(bible.characters, asEntries(pkg.characters)),
+    scenes: mergeBibleLists(bible.scenes, asEntries(pkg.locations)),
+    props: mergeBibleLists(bible.props, asEntries(pkg.props)),
+  });
+  doc.bibleUpdatedAt = Date.now();
+  return { boards, videos, cut, refNodes };
+}
+async function ensureMusicPackage(analysis, args, completeFn) {
+  let pkg = args && args.package;
+  if (typeof pkg === 'string') { try { pkg = JSON.parse(pkg); } catch { pkg = null; } }
+  const style = String((args && (args.style || args.brief)) || '');
+  const force = args && (args.force === true || args.force === 'true' || args.regenerate === true);
+  if ((!pkg || force) && !(args && args.keepPackage)) {
+    pkg = planMusicVideoPackage(analysis, {
+      maxClipSeconds: Number(args && args.maxClipSeconds) || 15,
+      brief: style, style,
+      allowedDurations: args && args.allowedDurations,
+    });
+    if (analysisIsThin(analysis) && typeof completeFn === 'function') {
+      try {
+        const res = await completeFn({
+          system: '你是音乐 MV 导演。只返回 JSON，不要改时间码，不要写散文摘要代替分镜。',
+          user: llmCreativeUserPrompt(pkg) + (style ? ('\n用户想要的风格：' + style) : ''),
+          temperature: 0.4,
+        });
+        const text = res && typeof res === 'object' ? res.text : String(res || '');
+        const json = extractJsonObject(text || '');
+        if (json) pkg = mergeCreative(pkg, json);
+      } catch { /* 没有文本模型时保留按歌曲铺好的分镜 */ }
+    }
+  }
+  if (!pkg || !Array.isArray(pkg.scenes) || !pkg.scenes.length) {
+    pkg = planMusicVideoPackage(analysis, { maxClipSeconds: 15, brief: style, style });
+  }
+  return pkg;
+}
+async function canvasMusicVideo(args, completeFn) {
   const id = String((args && args.projectId) || '');
   const canvasId = toolCanvasId(args);
   let doc = readToolDoc(args);
@@ -3499,79 +3767,163 @@ function canvasMusicVideo(args) {
     audio = doc.nodes[created.nodeId];
   }
   if (!analysis || typeof analysis !== 'object') analysis = audio.data && audio.data.analysis;
+  if ((!analysis || typeof analysis !== 'object') && audio.data && audio.data.mvPackage) analysis = { durationSec: audio.data.mvPackage.durationSec, summary: '', sections: [] };
   if (!analysis || typeof analysis !== 'object') throw new Error('还没有音频分析：先 canvas_analyze_audio，或把 analysis JSON 传进来');
   audio.data.analysis = analysis;
-  audio.data.status = audio.data.assetId ? 'done' : (audio.data.status || 'idle');
-  const maxClip = Number(args && args.maxClipSeconds) || 15;
-  const plan = planMusicVideoShots(analysis, { maxClipSeconds: maxClip, brief: (args && args.brief) || '' });
-  let sb = (args && args.storyboardNodeId) ? findTypedNode(doc, args.storyboardNodeId, 'storyboard') : null;
-  if (!sb) {
-    const created = canvasCreateNode({ projectId: id, canvasId, type: 'storyboard', name: 'MV 分镜' });
-    doc = readToolDoc(args);
-    audio = doc.nodes[audio.id];
-    sb = doc.nodes[created.nodeId];
-  }
-  sb.data.shots = plan.shots;
-  sb.data.status = 'done';
-  sb.data.aiStatus = 'idle';
-  sb.data.aiError = null;
-  sb.data.segMaxSeconds = plan.maxClipSeconds;
-  sb.data.warnings = [];
-  connectEdge(doc, audio.id, sb.id, 'analysis', 'music');
-  let video = (args && args.videoNodeId) ? findTypedNode(doc, args.videoNodeId, 'video') : null;
-  if (!video) {
-    writeToolDoc(args, doc);
-    const created = canvasCreateNode({ projectId: id, canvasId, type: 'video', name: 'MV 视频', connectFrom: sb.id });
-    doc = readToolDoc(args);
-    audio = doc.nodes[audio.id];
-    sb = doc.nodes[sb.id];
-    video = doc.nodes[created.nodeId];
-  } else if (!(doc.edges || []).some((e) => e.fromNode === sb.id && e.toNode === video.id)) {
-    connectEdge(doc, sb.id, video.id);
-  }
-  let cut = (args && args.finalcutNodeId) ? findTypedNode(doc, args.finalcutNodeId, 'finalcut') : null;
-  if (!cut) {
-    writeToolDoc(args, doc);
-    const created = canvasCreateNode({ projectId: id, canvasId, type: 'finalcut', name: 'MV 成片' });
-    doc = readToolDoc(args);
-    audio = doc.nodes[audio.id];
-    video = doc.nodes[video.id];
-    cut = doc.nodes[created.nodeId];
-  }
-  if (video && !(doc.edges || []).some((e) => e.fromNode === video.id && e.toNode === cut.id && e.toPort === 'in')) {
-    connectEdge(doc, video.id, cut.id, 'out', 'in');
-  }
-  connectEdge(doc, audio.id, cut.id, 'out', 'music');
-  if (audio.data.assetId) cut.data.soundtrackAssetId = audio.data.assetId;
-  cut.data.transition = cut.data.transition || 'none';
+  audio.data.status = 'done';
+  const style = String((args && (args.style || args.brief)) || '');
+  const prevStyle = String((audio.data && audio.data.styleText) || '');
+  const styleChanged = !!(style && style !== prevStyle);
+  if (style) audio.data.styleText = style;
+  absorbMvNodes(doc, audio);
+  const reuse = !!(audio.data && audio.data.mvPackage) && !(args && (args.force || args.regenerate || args.package)) && !styleChanged;
+  const pkg = reuse
+    ? audio.data.mvPackage
+    : await ensureMusicPackage(analysis, { ...args, style: style || prevStyle, brief: style || prevStyle, force: true }, completeFn);
+  audio.data.mvPackage = pkg;
+  const laid = layMusicVideo(doc, audio, pkg);
   try {
     const inv = packInventory(HERE);
     const allow = allowedIds(inv);
     const base = normalizeSkillProfile(doc.skillProfile, allow);
     doc.skillProfile = normalizeSkillProfile({ ...base, form: 'music-video' }, allow);
     doc.skillUpdatedAt = Date.now();
-  } catch { /* 技能包缺失不阻断分镜 */ }
+  } catch { /* 技能包缺失不阻断 */ }
   doc.updatedAt = Date.now();
   writeToolDoc(args, doc);
   markDocChanged(id, canvasId);
-  const segments = groupShotsForClips(plan.shots, plan.maxClipSeconds);
-  const over = segments.filter((g) => g.duration > plan.maxClipSeconds + 0.05);
+  const shotCount = (pkg.scenes || []).reduce((s, sc) => s + (sc.shots || []).length, 0);
+  const sample = pkg.scenes && pkg.scenes[0] && pkg.scenes[0].shots && pkg.scenes[0].shots[0];
   return {
     ok: true,
     projectId: id,
     ...(canvasId ? { canvasId } : {}),
     nodeId: audio.id,
-    storyboardNodeId: sb.id,
-    videoNodeId: video ? video.id : '',
-    finalcutNodeId: cut.id,
-    shotCount: plan.shots.length,
-    total: plan.total,
-    segmentCount: segments.length,
-    text: '已按音乐铺 MV：' + plan.shots.length + ' 镜 / ' + plan.total + 's / ' + segments.length + ' 个 ≤' + plan.maxClipSeconds + 's 生成段'
-      + (plan.bpm ? ('，BPM ' + plan.bpm) : '')
-      + '。分镜表「' + ((sb.data && sb.data.label) || sb.id) + '」，视频节点连分镜表，成片的 music 口接原曲。'
-      + (over.length ? ' 有段落超过单次上限，生成时会按切点再拆。' : '')
-      + ' 下一步 canvas_run_node 视频节点，再跑成片。',
+    storyboardNodeId: laid.boards[0] ? laid.boards[0].id : '',
+    videoNodeId: laid.videos[0] ? laid.videos[0].id : '',
+    finalcutNodeId: laid.cut.id,
+    shotCount,
+    sceneCount: (pkg.scenes || []).length,
+    total: pkg.durationSec,
+    segmentCount: (pkg.scenes || []).length,
+    text: '已生成整支 MV，不是一段摘要。共 ' + (pkg.scenes || []).length + ' 场 / ' + shotCount + ' 镜 / ' + pkg.durationSec + 's，每场 ≤15 秒并卡在重拍上。'
+      + '设定集已写入角色/场景/道具，画布上有参考图、每场分镜表、每场视频（尾帧相接）和接了原曲的成片。'
+      + (sample ? ('\n第一镜视频提示词：' + String(sample.videoPrompt || sample.visual || '').slice(0, 180)) : '')
+      + '\n不要只把歌曲摘要念给用户。要出片就 canvas_run_node 这些视频节点，或让用户在音乐时间轴上点「生成全部」。',
+  };
+}
+
+async function canvasMusicTimeline(args, completeFn) {
+  const id = String((args && args.projectId) || '');
+  const canvasId = toolCanvasId(args);
+  let doc = readToolDoc(args);
+  let analysis = args && args.analysis;
+  if (typeof analysis === 'string' && analysis.trim()) {
+    try { analysis = JSON.parse(analysis); } catch { throw new Error('analysis 需要 JSON 对象'); }
+  }
+  let audio = findTypedNode(doc, args && args.nodeId, 'audio');
+  if (!audio) {
+    const created = canvasCreateNode({ projectId: id, canvasId, type: 'audio', name: (args && args.name) || '歌曲', assetId: (args && args.assetId) || '' });
+    doc = readToolDoc(args);
+    audio = doc.nodes[created.nodeId];
+  }
+  if (!analysis || typeof analysis !== 'object') analysis = audio.data && audio.data.analysis;
+  if (!analysis || typeof analysis !== 'object') throw new Error('还没有音频分析：先上传歌曲并分析，或传入 analysis');
+  const style = String((args && (args.style || args.brief)) || (audio.data && audio.data.styleText) || '');
+  audio.data.analysis = analysis;
+  audio.data.styleText = style;
+  audio.data.status = 'done';
+  const pkg = await ensureMusicPackage(analysis, { ...args, style, brief: style, force: true }, completeFn);
+  audio.data.mvPackage = pkg;
+  doc.updatedAt = Date.now();
+  writeToolDoc(args, doc);
+  markDocChanged(id, canvasId);
+  const shotCount = (pkg.scenes || []).reduce((s, sc) => s + (sc.shots || []).length, 0);
+  return {
+    ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: audio.id,
+    sceneCount: (pkg.scenes || []).length, shotCount, total: pkg.durationSec, package: pkg,
+    text: '音乐时间轴已按「' + (style || '歌曲本身') + '」铺好：' + (pkg.scenes || []).length + ' 场 / ' + shotCount + ' 镜 / ' + pkg.durationSec + 's。每镜含剧情、角色、景别机位运镜、关键帧提示词和视频提示词。要改某一镜用 canvas_music_timeline_edit；要落到分镜/视频/成片用 canvas_music_video。不要只回复摘要。',
+  };
+}
+function canvasMusicTimelineEdit(args) {
+  const id = String((args && args.projectId) || '');
+  const canvasId = toolCanvasId(args);
+  const doc = readToolDoc(args);
+  const audio = findTypedNode(doc, args && args.nodeId, 'audio');
+  if (!audio || !audio.data || !audio.data.mvPackage) throw new Error('还没有音乐时间轴');
+  const sceneIndex = Number(args && args.sceneIndex);
+  const shotIndex = Number(args && args.shotIndex);
+  let base = audio.data.mvPackage;
+  const patch = (args && args.patch) || {};
+  if (patch.styleLock != null) {
+    base = applyContinuity(base, { styleLock: String(patch.styleLock).slice(0, 200) });
+  }
+  let pkg;
+  let editText;
+  if (patch.complaint) {
+    pkg = reviseShotPrompt(base, sceneIndex, shotIndex, patch.complaint);
+    editText = '只改了这一镜的提示词，还没有生成。请用户确认。确认后把 patch.confirm 设为 true，并且只重跑这一镜。';
+  } else if (patch.confirm === true) {
+    pkg = confirmShot(base, sceneIndex);
+    editText = '这一镜已确认。现在可以只对它 canvas_run_node。场景主图还没有的镜会被拦住。其他镜不要连带重跑。';
+  } else {
+    pkg = patchPackageShot(base, sceneIndex, shotIndex, patch);
+    editText = '已改时间轴 场' + (sceneIndex + 1) + ' 镜' + (shotIndex + 1) + '（' + pkg.scenes[sceneIndex].shots[shotIndex].startSec + '-' + pkg.scenes[sceneIndex].shots[shotIndex].endSec + 's）。推到画布请再调 canvas_music_video 并带 keepPackage:true。';
+  }
+  audio.data.mvPackage = pkg;
+  projectSceneToNodes(doc, audio, sceneIndex);
+  doc.updatedAt = Date.now();
+  writeToolDoc(args, doc);
+  markDocChanged(id, canvasId);
+  const blocked = missingSceneRefs(pkg);
+  return {
+    ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: audio.id, package: pkg,
+    awaitingConfirm: !!(pkg.scenes[sceneIndex] && pkg.scenes[sceneIndex].awaitingConfirm) || undefined,
+    blocked: blocked.length ? blocked : undefined,
+    text: editText,
+  };
+}
+
+async function canvasMusicRemix(args) {
+  const id = String((args && args.projectId) || '');
+  const canvasId = toolCanvasId(args);
+  let doc = readToolDoc(args);
+  let audio = findTypedNode(doc, args && args.nodeId, 'audio');
+  if (!audio) {
+    const created = canvasCreateNode({ projectId: id, canvasId, type: 'audio', name: (args && args.name) || '翻拍' });
+    doc = readToolDoc(args);
+    audio = doc.nodes[created.nodeId];
+  }
+  const analysis = (audio.data && audio.data.analysis) || (args && args.analysis) || { durationSec: Number(args && args.durationSec) || 60, summary: '' };
+  const style = String((args && args.style) || (audio.data && audio.data.styleText) || '恶搞翻拍，人物替换');
+  const caps = detectRemixCapabilities(args && args.providerHint);
+  const pkg = buildRemixPackage(analysis, {
+    durationSec: analysis.durationSec,
+    cuts: args && args.cuts,
+    descriptions: args && args.descriptions,
+    replacements: args && args.replacements,
+    keyframes: args && args.keyframes,
+    keep: args && args.keep,
+    style,
+    provider: args && args.providerHint,
+  });
+  audio.data.analysis = analysis;
+  audio.data.styleText = style;
+  audio.data.status = 'done';
+  audio.data.mvPackage = pkg;
+  if (args && args.sourceAssetId) audio.data.sourceVideoAssetId = String(args.sourceAssetId);
+  const laid = layMusicVideo(doc, audio, pkg);
+  doc.updatedAt = Date.now();
+  writeToolDoc(args, doc);
+  markDocChanged(id, canvasId);
+  const shotCount = (pkg.scenes || []).reduce((s, sc) => s + (sc.shots || []).length, 0);
+  return {
+    ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: audio.id,
+    sceneCount: (pkg.scenes || []).length, shotCount, total: pkg.durationSec,
+    path: caps.path, package: pkg,
+    finalcutNodeId: laid.cut.id,
+    text: '已按原片切点铺好翻拍时间轴：' + (pkg.scenes || []).length + ' 场 / ' + pkg.durationSec + 's，走「' + caps.path + '」。' + caps.note
+      + ' 某一场想留原片，用 canvas_music_timeline_edit 把 keep 设为 true。风格句已写进每镜提示词。',
   };
 }
 
@@ -4214,6 +4566,29 @@ export function apply(ctx) {
       async audioUnderstand(args) {
         const analysis = await understandFromRequest(args || {});
         return { ok: true, analysis };
+      },
+      async audioEndpointPresets() {
+        return { ok: true, presets: AUDIO_ENDPOINT_PRESETS };
+      },
+      async audioBuildTimeline(args) {
+        return canvasMusicTimeline(args || {}, (req) => complete(req));
+      },
+      async audioPatchTimeline(args) {
+        return canvasMusicTimelineEdit(args || {});
+      },
+      async audioProduceMusicVideo(args) {
+        return canvasMusicVideo(args || {}, (req) => complete(req));
+      },
+      async audioRemix(args) {
+        return canvasMusicRemix(args || {});
+      },
+      async audioDescribeFrame(args) {
+        try {
+          const r = await describeFrameFromRequest(args || {});
+          return { ok: true, ...r };
+        } catch (e) {
+          return { ok: true, description: '', fallback: true, reason: String((e && e.message) || e) };
+        }
       },
       async audioPlanStoryboard(args) {
         const a = args && args.analysis;
@@ -4949,29 +5324,101 @@ export function apply(ctx) {
           },
         });
         reg({
-          name: 'canvas_music_video',
-          description: '用音频分析生成音乐 MV 分镜，并接到现有的视频 / 成片流水线。镜头时长对齐歌曲段落和拍点；切点落在 scene_change / closeup，方便按 ≤15 秒一段生成，段与段用尾帧接力。会写入（或新建）分镜表、连一个视频节点、连成片，并把音频节点的 out 接到成片的 music 口当原曲声轨。同时把项目规格设为 music-video。分析从音频节点读取；也可以直接传 analysis JSON。不要手写一套与节拍无关的秒数。',
+          name: 'canvas_music_timeline',
+          description: '为音频节点生成音乐时间轴：全曲每一秒都落到 ≤15 秒的场和卡在重拍上的镜头，每镜有剧情、角色、景别/机位/运镜、关键帧提示词和视频提示词。style 是用户的风格要求（如「贴地高速、羊毛和刺眼阳光」），会写进全部提示词。分析太薄时会再用文本模型补提示词，不会停在一段摘要。生成后用 canvas_music_timeline_edit 改某一镜，用 canvas_music_video 推到画布。',
           parameters: {
             type: 'object',
             properties: {
               projectId: { type: 'string', description: '项目 id' },
               canvasId: { type: 'string', description: '可选：画布 id' },
               nodeId: { type: 'string', description: '可选：音频节点 id' },
-              storyboardNodeId: { type: 'string', description: '可选：要写入的分镜表。缺省新建' },
-              videoNodeId: { type: 'string', description: '可选：要连接的视频节点。缺省新建并连到分镜表' },
-              finalcutNodeId: { type: 'string', description: '可选：成片节点。缺省新建' },
-              name: { type: 'string', description: '可选：新建音频节点时的名字' },
-              brief: { type: 'string', description: '可选：画面方向，写进每镜，不改变切点' },
-              maxClipSeconds: { type: 'number', description: '可选：单次视频生成上限，默认 15，最大 15' },
-              analysis: { type: 'object', description: '可选：已有的音频分析 JSON。缺省读音频节点' },
+              name: { type: 'string', description: '可选：新建音频节点的名字' },
+              style: { type: 'string', description: '风格要求，自由文本。写什么用什么，不要套固定故事' },
+              analysis: { type: 'object', description: '可选：已有分析 JSON' },
+              allowedDurations: { type: 'array', items: { type: 'number' }, description: '可选：当前视频模型允许的秒数。不传则用内置档，并按歌曲结构拆段' },
             },
             required: ['projectId'],
             additionalProperties: false,
           },
           output: textOutput,
-          timeoutMs: 60000,
+          timeoutMs: 180000,
           async execute(args) {
-            return canvasMusicVideo(args || {});
+            return canvasMusicTimeline(args || {}, (req) => complete(req));
+          },
+        });
+        reg({
+          name: 'canvas_music_timeline_edit',
+          description: '修改音乐时间轴上的一镜。patch 可含 visual、camera、motion、light、imagePrompt、videoPrompt、title、duration、join（cut 硬切 / continuous 续帧）、keep（true 保留原片不生成）、refs（{characters,locations,props}）、styleLock。用户指出某一镜有问题（人数重复、穿帮）时只传 complaint=用户原话，禁止生成；等用户确认后再传 confirm:true，并且只重跑这一镜。duration 吸到重拍。sceneIndex / shotIndex 从 0 起。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              canvasId: { type: 'string', description: '可选：画布 id' },
+              nodeId: { type: 'string', description: '音频节点 id' },
+              sceneIndex: { type: 'integer', description: '场序号，从 0 起' },
+              shotIndex: { type: 'integer', description: '镜序号，从 0 起' },
+              patch: { type: 'object', description: '要改的字段' },
+            },
+            required: ['projectId', 'nodeId', 'sceneIndex', 'shotIndex', 'patch'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 30000,
+          async execute(args) {
+            return canvasMusicTimelineEdit(args || {});
+          },
+        });
+        reg({
+          name: 'canvas_music_remix',
+          description: '把已有 MV 原片按切点铺成翻拍时间轴：每段对齐歌曲时长，用替换角色重拍。cuts 是秒数数组（画布用帧差检出，Agent 也可以传入）。descriptions 是每段一句画面描述（有全模态模型时可由关键帧得到，没有就留空）。replacements 是 [{name, desc}]。providerHint 用来判断走视频编辑、关键帧编辑还是参考图重拍；没有视频到视频接口时自动退到参考图，并在回执里写明。keep 是要保留原片、不生成的场序号（从 0 起）。style 如「恶搞、人物替换」会写进每镜提示词。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              canvasId: { type: 'string', description: '可选：画布 id' },
+              nodeId: { type: 'string', description: '可选：音频节点 id（歌曲应已分析）' },
+              style: { type: 'string', description: '翻拍风格，如恶搞、人物替换' },
+              cuts: { type: 'array', items: { type: 'number' }, description: '原片切点（秒），不含 0 和片尾' },
+              descriptions: { type: 'array', items: { type: 'string' }, description: '每段一句：动作、构图、机位' },
+              replacements: { type: 'array', items: { type: 'object' }, description: '替换角色，元素含 name' },
+              keyframes: { type: 'array', items: { type: 'object' }, description: '可选：{index, assetId} 原镜关键帧' },
+              keep: { type: 'array', items: { type: 'integer' }, description: '保留原片、不生成的场序号' },
+              sourceAssetId: { type: 'string', description: '原片视频资产 id' },
+              providerHint: { type: 'object', description: '可选：{imageMode, videoExtra, videoProtocol}' },
+              durationSec: { type: 'number', description: '可选：歌曲时长' },
+            },
+            required: ['projectId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 120000,
+          async execute(args) {
+            return canvasMusicRemix(args || {});
+          },
+        });
+        reg({
+          name: 'canvas_music_video',
+          description: '把一首歌做成整支 MV 并铺到画布。这是音乐视频的唯一完工动作：写设定集（角色/场景/道具）、每场分镜表（镜头含关键帧提示词和视频提示词，时长加总等于歌曲）、每场参考图和视频节点、场与场尾帧相接、成片接原曲。style 是用户想要的风格。不要只回复分析摘要。keepPackage:true 表示沿用时间轴上已改过的版本，不再重算。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              canvasId: { type: 'string', description: '可选：画布 id' },
+              nodeId: { type: 'string', description: '可选：音频节点 id' },
+              name: { type: 'string', description: '可选：新建音频节点的名字' },
+              style: { type: 'string', description: '风格要求，自由文本，写进每镜提示词' },
+              brief: { type: 'string', description: '同 style' },
+              analysis: { type: 'object', description: '可选：分析 JSON' },
+              keepPackage: { type: 'boolean', description: 'true = 使用时间轴上已编辑的版本' },
+              force: { type: 'boolean', description: 'true = 按风格重算时间轴再铺画布' },
+            },
+            required: ['projectId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 180000,
+          async execute(args) {
+            return canvasMusicVideo(args || {}, (req) => complete(req));
           },
         });
         // ── 技能包：把「本插件有哪些技能、各管什么」和「当前该按什么口径写提示词」交给对话侧 ──

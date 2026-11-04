@@ -12,7 +12,7 @@ Infinite Canvas is a [DeepSeek Harness](https://github.com/deepseek-ai) plugin t
 
 Everything runs locally in your Harness. Bring your own generation APIs, or use the built-in demo mode to learn the whole flow with zero configuration.
 
-Music videos: put a song on an audio node. An omni model (`qwen3.8-omni-flash`, the official id for Qwen3.8-Omni-Flash) returns BPM, sections, beats and imagery; the storyboard is cut to that structure and the original song is the final-cut soundtrack. With no provider, a labeled local beat analysis keeps the pipeline runnable offline.
+Music videos: the audio node is a timeline. An omni model (`qwen3.8-omni-flash`, the official id for Qwen3.8-Omni-Flash; Singapore often uses `qwen3-omni-flash`) lays the whole song into shots and prompts. Blocks in one location share references; hard cuts sit on beats and continuous shots chain tail frame to first frame. An existing MV can be split and remade with other characters. The original song is the final-cut soundtrack. With no provider, a labeled local beat analysis keeps the pipeline runnable offline.
 
 ## Drive it from the chat
 

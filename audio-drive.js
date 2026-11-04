@@ -15,11 +15,396 @@ export const SUGGESTED_MODEL_ID = 'qwen3.8-omni-flash';
 export const USER_MODEL_NAME = 'Qwen3.8-Omni-Flash';
 /** 北京地域百炼 OpenAI 兼容模式。国际站 / 工作空间端点由用户粘贴覆盖。 */
 export const DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+/** 音频理解端点预设。新加坡用 Qwen Cloud 的 compatible-mode，模型 id 是 qwen3-omni-flash。 */
+export const AUDIO_ENDPOINT_PRESETS = [
+  { id: 'beijing', label: '北京 · DashScope', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-omni-flash' },
+  { id: 'singapore', label: '新加坡 · Qwen Cloud', baseUrl: 'https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1', model: 'qwen3-omni-flash' },
+  { id: 'intl', label: '国际 · DashScope Intl', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-omni-flash' },
+];
 /**
  * DashScope：Base64 字符串必须 < 10MB。留出 JSON 信封，并低于宿主代理 16MB 上限。
  * 与 client.js 里的同名预算函数保持一致（scripts/test-audio-drive.mjs 会比对函数体）。
  */
 export const AUDIO_BASE64_LIMIT = 9500000;
+/** MV 单次视频生成允许的时长（秒）。更长的节拍槽会拆段；对不上的槽位取最近允许值再裁切。 */
+export const MV_GEN_DURATIONS = [4, 5, 6, 8, 10, 12, 15];
+
+function normalizeDurations(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const n of list) {
+    const v = Number(n);
+    if (v >= 1 && v <= 120 && !out.includes(v)) out.push(v);
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+/** allowed 是当前视频模型声明的时长档。不传就用内置档。槽位对不上就取最近档，长过上限就封顶。 */
+export function snapGenerationDuration(sec, allowed) {
+  const list = normalizeDurations(allowed);
+  const use = list.length ? list : MV_GEN_DURATIONS;
+  const slot = round3(Math.max(0.4, num(sec, 0)));
+  const max = use[use.length - 1];
+  if (slot > max) return { requestSec: max, slotSec: slot, split: true, warn: '超过模型单次上限 ' + max + ' 秒，已封顶，请拆段' };
+  let best = use[0];
+  for (const d of use) if (Math.abs(d - slot) < Math.abs(best - slot)) best = d;
+  const warn = Math.abs(best - slot) > 0.35
+    ? ('生成时长 ' + best + 's，成片裁到节拍槽 ' + slot + 's')
+    : '';
+  return { requestSec: best, slotSec: slot, split: false, warn };
+}
+
+/** 帧差序列 → 切点（秒）。阈值用相邻帧平均绝对差，间隔至少 0.8 秒。 */
+export function cutsFromDiffs(diffs, hopSec, threshold) {
+  const hop = Math.max(0.05, num(hopSec, 0.5));
+  const th = num(threshold, 0.18);
+  const cuts = [0];
+  for (let i = 1; i < (diffs || []).length; i++) {
+    const t = round3(i * hop);
+    if (Number(diffs[i]) >= th && t - cuts[cuts.length - 1] >= 0.8) cuts.push(t);
+  }
+  return cuts;
+}
+
+/**
+ * 长片连贯：同一场景的连续场共享地点参考与光线，场与场之间标明硬切或续帧。
+ * 风格锁写进每一镜提示词。已有 join / refs 不被覆盖。
+ */
+export function applyContinuity(pkg, opts) {
+  const next = JSON.parse(JSON.stringify(pkg || {}));
+  const lock = str((opts && opts.styleLock) || (next.continuity && next.continuity.styleLock) || (next.treatment && next.treatment.styleAnchor), 200);
+  next.continuity = { styleLock: lock, seed: (next.continuity && next.continuity.seed) || null };
+  const marker = '【风格锁】';
+  let prevLoc = '';
+  (next.scenes || []).forEach((sc, si) => {
+    const loc = (sc.shots && sc.shots[0] && sc.shots[0].scene) || ((next.locations || [])[0] && next.locations[0].name) || '';
+    if (sc.join !== 'cut' && sc.join !== 'continuous') sc.join = sc.continued ? 'continuous' : 'cut';
+    if (loc) prevLoc = loc;
+    if (!sc.refs) {
+      sc.refs = {
+        characters: (next.characters || []).map((c) => c.name),
+        locations: loc ? [loc] : (next.locations || []).map((c) => c.name).slice(0, 1),
+        props: (next.props || []).map((c) => c.name),
+      };
+    }
+    sc.group = (sc.refs.locations && sc.refs.locations[0]) || sc.sectionLabel || 'scene';
+    for (const sh of sc.shots || []) {
+      sh.transition = sc.join;
+      if (lock && !String(sh.videoPrompt || '').includes(marker)) sh.videoPrompt = (sh.videoPrompt || sh.visual || '') + ' ' + marker + lock;
+      if (lock && sh.imagePrompt && !String(sh.imagePrompt).includes(marker)) sh.imagePrompt += ' ' + marker + lock;
+    }
+  });
+  return next;
+}
+
+/**
+ * 看供应商描述决定翻拍走哪条路。没有视频到视频的通用请求体时，即使扩展参数提到视频编辑，
+ * 也只记录这条能力，实际仍用关键帧 + 参考图（见返回的 note）。
+ */
+export function detectRemixCapabilities(hint) {
+  const h = hint || {};
+  const blob = [h.imageMode, h.videoExtra, h.videoProtocol, h.note].map((x) => String(x || '')).join(' ').toLowerCase();
+  const videoToVideo = /v2v|video[-_ ]?to[-_ ]?video|video[-_ ]?edit|参考视频|视频编辑/.test(blob);
+  const imageEdit = String(h.imageMode || '') === 'edits' || /images\/edits|image[-_ ]?edit/.test(blob);
+  if (videoToVideo) {
+    return {
+      path: 'video-to-video',
+      videoToVideo: true,
+      imageEdit,
+      referenceToVideo: true,
+      note: '扩展参数提到视频编辑，但本插件没有通用的视频到视频请求。这一场改用原镜关键帧作首帧、替换角色作参考图，提示词按翻拍来写。',
+    };
+  }
+  if (imageEdit) {
+    return {
+      path: 'first-frame-edit',
+      videoToVideo: false,
+      imageEdit: true,
+      referenceToVideo: true,
+      note: '图片供应商是编辑模式：先在原镜关键帧上换成新角色，再拿这张图做首帧生成视频。',
+    };
+  }
+  return {
+    path: 'reference-to-video',
+    videoToVideo: false,
+    imageEdit: false,
+    referenceToVideo: true,
+    note: '按参考图重拍：替换角色的设定图和原镜关键帧一起进视频节点，时长仍卡在原切点上。',
+  };
+}
+
+/** 原片切点铺成翻拍时间轴。keep 里的场不生成，只留在参考轨。 */
+export function buildRemixPackage(analysis, opts) {
+  const o = opts || {};
+  const dur = Math.max(4, num(o.durationSec, analysis && analysis.durationSec) || 60);
+  const a = normalizeAnalysis(analysis || { durationSec: dur, summary: o.style || '' }, { durationSec: dur, source: 'local-fallback', method: 'mock' });
+  const allowed = normalizeDurations(o.allowedDurations);
+  const clipMax = allowed.length ? allowed[allowed.length - 1] : 15;
+  let cuts = (o.cuts || []).map((t) => num(t, NaN)).filter((t) => t > 0.3 && t < dur - 0.3).sort((x, y) => x - y);
+  if (!cuts.length) {
+    for (let t = 8; t < dur - 2; t += 8) cuts.push(round3(t));
+  }
+  const bounds = [0].concat(cuts, [dur]);
+  const ranges = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    let t = bounds[i];
+    while (t < bounds[i + 1] - 0.05) {
+      const e = Math.min(bounds[i + 1], t + clipMax);
+      ranges.push([round3(t), round3(e)]);
+      t = e;
+    }
+  }
+  const caps = detectRemixCapabilities(o.provider);
+  const style = str(o.style, 240) || '恶搞翻拍，人物替换';
+  const who = str((o.replacements && o.replacements[0] && (o.replacements[0].name || o.replacements[0].to)) || '替换角色', 40);
+  const descriptions = o.descriptions || [];
+  const keep = new Set((o.keep || []).map((n) => Number(n)));
+  const scenes = ranges.map(([s0, s1], i) => {
+    const desc = str(descriptions[i] || '沿用原镜构图、机位和动作', 300);
+    const shot = {
+      title: '原镜 ' + (i + 1),
+      duration: round3(s1 - s0),
+      startSec: s0,
+      endSec: s1,
+      sectionLabel: 'verse',
+      seg: i === 0 ? 'opening' : 'scene_change',
+      visual: desc,
+      motion: '起点：沿原镜构图 → 保持机位与运动方向 → 终点：停在原镜切点之前',
+      camera: '景别跟随原镜；机位跟随原镜；运镜跟随原镜',
+      light: '沿用原镜光线',
+      imagePrompt: '把关键帧中的人物换成 @' + who + '@，保留构图、背景和机位。' + desc + '。' + style,
+      videoPrompt: round1(s1 - s0) + '秒。按原镜重拍，人物换成 @' + who + '@。' + desc + '。' + style + '。切点在 ' + round1(s0) + 's。',
+      characters: [who],
+      scene: '原片场景',
+      props: [],
+      dialogue: [],
+      tail: '动作进行到一半',
+      cam: '跟随原镜',
+      start: i === 0 ? '原片第 0 秒' : '',
+      timeBeats: ['0s 起势'],
+      sfx: '原曲声轨',
+      negative: 'wrong identity, extra people, extra limbs, watermark',
+      cutAt: s0,
+    };
+    return {
+      index: i + 1,
+      title: '原镜 ' + (i + 1),
+      sectionLabel: 'verse',
+      startSec: s0,
+      endSec: s1,
+      duration: shot.duration,
+      continued: false,
+      keep: keep.has(i),
+      genMode: keep.has(i) ? 'keep' : caps.path,
+      capabilityPath: caps.path,
+      capabilityNote: caps.note,
+      sourceNote: desc,
+      sourceKeyframeAssetId: ((o.keyframes || []).find((f) => Number(f.index) === i) || {}).assetId || null,
+      shots: [shot],
+    };
+  });
+  return stampGeneration(applyContinuity(decorateMusicPackage({
+    schema: 'dshic.mv-package.v1',
+    remix: true,
+    durationSec: dur,
+    bpm: a.bpm,
+    source: a.source,
+    maxClipSeconds: 15,
+    treatment: { title: '翻拍', logline: style, style, styleAnchor: style.slice(0, 80) },
+    continuity: { styleLock: style.slice(0, 80), seed: null },
+    characters: [{ name: who, desc: style, imagePrompt: '角色设定图，' + who + '，三视图，无文字' }],
+    locations: [{ name: '原片场景', desc: '来自原 MV', imagePrompt: '场景设定图，原片场景，无文字' }],
+    props: [],
+    downbeats: a.downbeats || [],
+    scenes,
+    ...(allowed.length ? { genDefaults: { allowedDurations: allowed, model: null, resolution: null } } : {}),
+    warnings: [caps.note],
+  }, a), { styleLock: style.slice(0, 80) }));
+}
+
+export function stampGeneration(pkg) {
+  const next = JSON.parse(JSON.stringify(pkg || {}));
+  const allowed = next.genDefaults && next.genDefaults.allowedDurations;
+  for (const sc of next.scenes || []) {
+    const fit = snapGenerationDuration(sc.duration, allowed);
+    const prev = sc.gen && typeof sc.gen === 'object' ? sc.gen : {};
+    sc.gen = {
+      status: prev.stale ? 'stale' : (prev.status || 'idle'),
+      assetId: prev.assetId || null,
+      actualSec: prev.actualSec == null ? null : num(prev.actualSec, 0),
+      history: Array.isArray(prev.history) ? prev.history.slice(-8) : [],
+      stale: !!prev.stale,
+      requestSec: fit.requestSec,
+      slotSec: fit.slotSec,
+      warn: fit.warn || '',
+    };
+  }
+  return next;
+}
+
+function sectionLine(sec) {
+  const visual = str(sec && sec.visual, 120);
+  if (visual) return visual;
+  const role = sectionLabelZh((sec && sec.label) || 'unknown');
+  const bits = [];
+  if (sec && sec.mood) bits.push(str(sec.mood, 40));
+  if (sec && sec.instruments && sec.instruments.length) bits.push(sec.instruments.slice(0, 3).join('、'));
+  return bits.length ? (role + '：' + bits.join('，')) : role;
+}
+
+function buildMusicScript(pkg, analysis) {
+  const a = analysis || {};
+  const lines = [];
+  if (pkg.bpm) lines.push('[Tempo Lock - ' + pkg.bpm + ' BPM]');
+  const sections = pkg.sections || [];
+  const lyrics = a.lyrics || [];
+  if (!sections.length) {
+    lines.push('[Structure]');
+    if (pkg.treatment && pkg.treatment.logline) lines.push(pkg.treatment.logline);
+    return lines.join('\n');
+  }
+  for (const sec of sections) {
+    lines.push('[' + sectionLabelZh(sec.label) + ' ' + round1(sec.startSec) + '-' + round1(sec.endSec) + 's]');
+    if (sec.line) lines.push(sec.line);
+    for (const ly of lyrics) {
+      const mid = (num(ly.startSec, 0) + num(ly.endSec, 0)) / 2;
+      if (mid >= sec.startSec && mid < sec.endSec && ly.text) lines.push(String(ly.text));
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 把听歌结果补成可排片的包：段落一句说明、剧本标签、角色面孔与选角、场景主图/多视角、
+ * 镜头内时间码、字幕轨。没有角色就不写人数锁，表演或抽象 MV 照样能铺。
+ * 模型名和分辨率留空，生成时用用户当前配置的供应商。
+ */
+export function decorateMusicPackage(pkg, analysis) {
+  const next = JSON.parse(JSON.stringify(pkg || {}));
+  const a = analysis || {};
+  const stylePrefix = str((next.treatment && (next.treatment.styleAnchor || next.treatment.style)) || '', 200);
+  next.stylePrefix = stylePrefix;
+  next.genDefaults = {
+    model: null,
+    resolution: null,
+    allowedDurations: (next.genDefaults && next.genDefaults.allowedDurations) || null,
+  };
+  next.characters = (next.characters || []).map((c, i) => ({
+    ...c,
+    appearance: c.appearance || c.desc || '',
+    faceId: c.faceId || ('face:' + (i + 1) + ':' + (c.name || i)),
+    castingCount: Number(c.castingCount) > 0 ? Number(c.castingCount) : 1,
+  }));
+  next.locations = (next.locations || []).map((loc) => ({
+    ...loc,
+    mainPrompt: loc.mainPrompt || ('场景图，' + (loc.name || '') + '。' + (loc.desc || '') + (stylePrefix ? ('。风格：' + stylePrefix) : '') + '。不要出现角色。'),
+    multiViewPrompt: loc.multiViewPrompt || ((loc.name || '场景') + '，同一空间的多视角，不要出现角色。' + (stylePrefix ? ('风格：' + stylePrefix) : '')),
+    hasMain: !!loc.hasMain,
+    hasMultiView: !!loc.hasMultiView,
+  }));
+  const fromAnalysis = (a.sections || []).filter((s) => s && s.endSec > s.startSec && s.label && s.label !== 'unknown');
+  if (fromAnalysis.length) {
+    next.sections = fromAnalysis.map((s, i) => ({
+      id: s.id || ('sec' + (i + 1)),
+      label: s.label || 'unknown',
+      startSec: round3(num(s.startSec, 0)),
+      endSec: round3(num(s.endSec, 0)),
+      line: sectionLine(s),
+    }));
+  } else {
+    const groups = [];
+    for (const sc of next.scenes || []) {
+      const last = groups[groups.length - 1];
+      if (last && last.label === sc.sectionLabel) last.endSec = sc.endSec;
+      else groups.push({ id: 'sec' + (groups.length + 1), label: sc.sectionLabel || 'unknown', startSec: sc.startSec, endSec: sc.endSec, line: sectionLine({ label: sc.sectionLabel }) });
+    }
+    next.sections = groups;
+  }
+  const names = next.characters.map((c) => c.name).filter(Boolean);
+  const lock = names.length
+    ? ('已绑定角色各只出现一人：' + names.map((n) => n + '×1').join('、') + '。不要多出同名的人。')
+    : '';
+  for (const sc of next.scenes || []) {
+    const parts = [];
+    let t = 0;
+    for (const sh of sc.shots || []) {
+      const dur = num(sh.duration, 0);
+      parts.push(round1(t) + '-' + round1(t + dur) + 's: ' + str(sh.visual || sh.motion || sh.camera, 180));
+      t += dur;
+      sh.genSettings = { model: null, resolution: null, duration: sh.duration };
+      if (lock && !String(sh.videoPrompt || '').includes('各只出现一人')) sh.videoPrompt = (sh.videoPrompt || '') + ' ' + lock;
+      const head = stylePrefix.slice(0, 16);
+      if (stylePrefix && sh.imagePrompt && head && !sh.imagePrompt.includes(head)) sh.imagePrompt = stylePrefix + '。' + sh.imagePrompt;
+    }
+    sc.narrative = (sc.shots || []).map((sh) => sh.visual).filter(Boolean).join('');
+    sc.timecode = parts.join(' [cut] ');
+    if (sc.shots && sc.shots[0] && parts[0] && !String(sc.shots[0].videoPrompt || '').includes(parts[0].slice(0, 6))) {
+      sc.shots[0].videoPrompt = sc.timecode + '。' + (sc.shots[0].videoPrompt || '');
+    }
+  }
+  next.script = buildMusicScript(next, a);
+  next.subtitleTrack = (a.lyrics || []).map((l, i) => ({
+    id: 'sub' + (i + 1),
+    startSec: num(l.startSec, 0),
+    endSec: num(l.endSec, 0),
+    text: str(l.text, 200),
+  })).filter((l) => l.text && l.endSec > l.startSec);
+  next.burnSubtitles = false;
+  next.stages = [
+    { id: 'writer', name: '编剧', status: 'done' },
+    { id: 'cast', name: '角色设计师', status: names.length ? 'ready' : 'skip' },
+    { id: 'scene', name: '场景设计师', status: (next.locations || []).length ? 'ready' : 'skip' },
+    { id: 'board', name: '分镜师', status: 'ready' },
+    { id: 'finish', name: '艺术总监', status: 'waiting' },
+  ];
+  next.confirmBeforeSpend = true;
+  return next;
+}
+
+/** 引用了场景、但该场景还没有主图的场。生成这些场之前要先出主图。 */
+export function missingSceneRefs(pkg) {
+  const locs = new Map((pkg && pkg.locations || []).map((l) => [l.name, l]));
+  const blocked = [];
+  (pkg && pkg.scenes || []).forEach((sc, si) => {
+    const names = (sc.refs && sc.refs.locations) || [];
+    for (const name of names) {
+      const loc = locs.get(name);
+      if (loc && !loc.hasMain) blocked.push({ sceneIndex: si, location: name, reason: '场景「' + name + '」还没有主图' });
+    }
+  });
+  return blocked;
+}
+
+/** 只改一镜的提示词，并停在待确认。complaint 是用户原话，不生成。 */
+export function reviseShotPrompt(pkg, sceneIndex, shotIndex, complaint) {
+  const next = JSON.parse(JSON.stringify(pkg || {}));
+  const sc = (next.scenes || [])[sceneIndex];
+  if (!sc) throw new Error('场不存在');
+  const shot = (sc.shots || [])[shotIndex];
+  if (!shot) throw new Error('镜不存在');
+  const names = ((sc.refs && sc.refs.characters) || shot.characters || []).filter(Boolean);
+  const lock = names.length
+    ? ('已绑定角色各只出现一人：' + names.map((n) => n + '×1').join('、') + '。')
+    : '';
+  const note = str(complaint, 240);
+  shot.videoPrompt = [shot.videoPrompt, lock, note ? ('按这次意见改：' + note) : ''].filter(Boolean).join(' ');
+  if (note && !String(shot.visual || '').includes(note)) shot.visual = (shot.visual || '') + '。' + note;
+  sc.awaitingConfirm = true;
+  sc.revision = note;
+  if (sc.gen) sc.gen.status = 'awaiting-confirm';
+  return next;
+}
+
+export function confirmShot(pkg, sceneIndex) {
+  const next = JSON.parse(JSON.stringify(pkg || {}));
+  const sc = (next.scenes || [])[sceneIndex];
+  if (!sc) throw new Error('场不存在');
+  sc.awaitingConfirm = false;
+  sc.confirmed = true;
+  if (sc.gen && sc.gen.status === 'awaiting-confirm') sc.gen.status = sc.gen.assetId ? 'stale' : 'idle';
+  return next;
+}
 
 const SECTION_LABELS = ['intro', 'verse', 'pre-chorus', 'chorus', 'bridge', 'breakdown', 'outro', 'instrumental', 'unknown'];
 const LABEL_ALIAS = {
@@ -91,23 +476,27 @@ export function audioDataField(audioBase64OrUrl, format) {
 
 export function analysisPrompt() {
   return [
-    '你在听一首完整的歌。请真正理解它（节奏、结构、情绪、配器、歌词、适合的画面），只返回一个 JSON 对象，不要 markdown，不要解释。',
+    '你在听一首完整的歌，要为它做一支音乐 MV。只返回一个 JSON 对象，不要 markdown，不要写散文。',
+    '必须覆盖全曲：每一段都写清配器、能量、情绪、这一段的歌词（没有就空字符串）、以及这一段能拍的画面。不要只给全曲一句摘要。',
     'JSON 字段：',
     '- bpm: 数字',
     '- timeSignature: 如 "4/4"',
     '- key: 调性，不确定就 null',
-    '- beats: 拍点时间（秒，从 0 起，升序）',
-    '- downbeats: 小节第一拍的时间（秒）',
-    '- sections: [{label,startSec,endSec,energy,mood}]。label 只能是 intro|verse|pre-chorus|chorus|bridge|breakdown|outro|instrumental。energy 为 0到1。段落首尾相接、覆盖全曲。',
-    '- mood: 全曲情绪一句话',
+    '- beats: 拍点时间（秒，从 0 起）',
+    '- downbeats: 重拍/小节第一拍（秒）',
+    '- sections: [{label,startSec,endSec,energy,mood,instruments,visual,color,lyric}]。label 只能是 intro|verse|pre-chorus|chorus|bridge|breakdown|outro|instrumental。energy 为 0到1。instruments 是字符串数组。visual 是这一段的具体画面（物件、空间、光、运动），color 是光色。段落首尾相接、覆盖到歌曲最后一秒。',
+    '- mood: 全曲情绪',
     '- genre: 字符串数组',
-    '- instrumentation: 字符串数组',
-    '- vocals: {present:boolean, language:字符串或null, style:字符串或null}',
-    '- lyrics: [{startSec,endSec,text}]，没有人声就空数组。text 用听到的原文。',
-    '- imagery: 3到6 条可拍摄的画面建议（具体物件/空间/光，不要抽象形容词堆砌）',
-    '- motif: 全片 1 个母题物',
-    '- summary: 80 字以内，这首歌怎么听、画面该怎么跟',
-    '时间单位一律是秒。不要编造听不到的歌词。',
+    '- instrumentation: 全曲主要配器',
+    '- vocals: {present, language, style}',
+    '- lyrics: [{startSec,endSec,text}]，听到的原文，没有人声就 []',
+    '- characters: [{name, desc}] 画面里的人，1到3 个',
+    '- locations: [{name, desc}] 空间',
+    '- props: [{name, desc}] 物件',
+    '- imagery: 3到6 条可拍摄的画面',
+    '- motif: 1 个母题物',
+    '- summary: 80 字以内，只是摘要，不能代替 sections',
+    '时间单位一律是秒。听不到的歌词不要编。',
   ].join('\n');
 }
 
@@ -280,6 +669,10 @@ export function normalizeAnalysis(raw, meta) {
       endSec: round3(Math.min(endSec, durationSec)),
       energy: round3(clamp01(s.energy == null ? 0.5 : s.energy)),
       mood: str(s.mood, 80),
+      instruments: strList(s.instruments, 6, 40),
+      visual: str(s.visual || s.visualIdea, 240),
+      color: str(s.color, 80),
+      lyric: str(s.lyric || s.lyricHint, 200),
     });
     if (sections.length >= 32) break;
   }
@@ -345,9 +738,27 @@ export function normalizeAnalysis(raw, meta) {
     lyrics,
     imagery: strList(src.imagery, 6, 120),
     motif: str(src.motif, 80),
-    summary: str(src.summary, 240),
+    summary: str(src.summary, 400),
+    characters: namedEntries(src.characters),
+    locations: namedEntries(src.locations),
+    props: namedEntries(src.props),
     warnings,
   };
+}
+
+function namedEntries(v) {
+  const arr = Array.isArray(v) ? v : [];
+  const out = [];
+  for (const item of arr) {
+    const name = str(typeof item === 'string' ? item : (item && (item.name || item.title)), 40);
+    if (!name) continue;
+    out.push({
+      name,
+      desc: str(typeof item === 'string' ? '' : (item && (item.desc || item.description)), 240),
+    });
+    if (out.length >= 6) break;
+  }
+  return out;
 }
 
 function sectionsFromEnergy(norm, hop, dur) {
@@ -510,6 +921,44 @@ export async function callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs }) 
   return parseOmniResponse(text);
 }
 
+export function buildFrameDescribeBody({ model, imageDataUrl }) {
+  return {
+    model: model || SUGGESTED_MODEL_ID,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: String(imageDataUrl || '') } },
+        { type: 'text', text: '用一句中文描述这个 MV 镜头的人物动作、构图和机位。只返回 JSON：{"description":"..."}' },
+      ],
+    }],
+    modalities: ['text'],
+    stream: true,
+    stream_options: { include_usage: true },
+    response_format: { type: 'json_object' },
+  };
+}
+
+/** 有全模态供应商就描述关键帧；没有或失败由调用方改走空描述，不阻断翻拍。 */
+export async function describeFrameFromRequest(req, fetchImpl) {
+  const r = req || {};
+  const provider = (r.provider && typeof r.provider === 'object') ? r.provider : null;
+  const model = provider ? str(provider.model, 80) : '';
+  const baseUrl = provider ? str(provider.baseUrl, 300) : '';
+  const apiKey = provider ? str(provider.apiKey, 400) : '';
+  const image = String(r.imageDataUrl || '').trim();
+  if (!model || !baseUrl || !apiKey || !image) {
+    return { description: '', fallback: true, reason: '未配置音频理解模型，关键帧描述留空，可以手写。' };
+  }
+  if (image.length > 1500000) return { description: '', fallback: true, reason: '关键帧过大，跳过描述。' };
+  const url = image.startsWith('data:') ? image : ('data:image/jpeg;base64,' + image);
+  const content = await callOmni({
+    baseUrl, apiKey, fetchImpl, timeoutMs: r.timeoutMs || 60000,
+    body: buildFrameDescribeBody({ model, imageDataUrl: url }),
+  });
+  const json = extractJsonObject(content);
+  return { description: str((json && json.description) || content, 300), fallback: false };
+}
+
 function parseExtra(extra) {
   if (!extra) return null;
   if (typeof extra === 'object' && !Array.isArray(extra)) return extra;
@@ -593,12 +1042,159 @@ function lyricsIn(analysis, start, end) {
   });
 }
 
+/** 只有一句摘要、段落里没有画面/配器/歌词时，视为听歌结果太薄，必须再写一版完整分镜。 */
+export function analysisIsThin(analysis) {
+  const sections = (analysis && analysis.sections) || [];
+  const rich = sections.filter((s) => s && (str(s.visual, 8) || str(s.lyric, 4) || (s.instruments && s.instruments.length)));
+  if (rich.length >= 2) return false;
+  const imagery = (analysis && analysis.imagery) || [];
+  if (imagery.length >= 3 && sections.filter((s) => s && s.label && s.label !== 'unknown').length >= 3) return false;
+  return true;
+}
+
+function clauseBits(analysis) {
+  const blob = [analysis.summary, ...(analysis.imagery || []), analysis.motif].filter(Boolean).join('。');
+  const parts = blob.split(/[。！？!?；;]/).map((s) => s.trim()).filter((s) => s.length >= 4);
+  return parts.length ? parts : ['跟随歌曲的能量'];
+}
+
+function synthesizedSections(analysis) {
+  const dur = analysis.durationSec;
+  const text = [analysis.summary, ...(analysis.genre || []), ...(analysis.imagery || []), analysis.mood].join(' ');
+  const edm = /电子|舞曲|EDM|house|techno|trance|贝斯|重拍|drop/i.test(text);
+  const rows = edm
+    ? [['intro', 0, 0.1, 0.22], ['pre-chorus', 0.1, 0.24, 0.5], ['chorus', 0.24, 0.48, 0.92], ['bridge', 0.48, 0.6, 0.18], ['chorus', 0.6, 0.86, 0.96], ['outro', 0.86, 1, 0.28]]
+    : [['intro', 0, 0.12, 0.28], ['verse', 0.12, 0.36, 0.46], ['chorus', 0.36, 0.56, 0.86], ['verse', 0.56, 0.72, 0.5], ['chorus', 0.72, 0.9, 0.9], ['outro', 0.9, 1, 0.24]];
+  return rows.map(([label, a, b, energy], i) => ({
+    id: 'syn' + (i + 1),
+    label,
+    startSec: round3(a * dur),
+    endSec: round3(i === rows.length - 1 ? dur : b * dur),
+    energy,
+    mood: analysis.mood || '',
+    instruments: analysis.instrumentation || [],
+    visual: '',
+    color: '',
+    lyric: '',
+  }));
+}
+
+function productionSections(analysis) {
+  const secs = (analysis.sections || []).filter((s) => s && s.endSec > s.startSec + 0.2 && s.label && s.label !== 'unknown');
+  if (secs.length >= 2) return secs;
+  return synthesizedSections(analysis);
+}
+
+function castOf(analysis) {
+  const bits = clauseBits(analysis).join('，');
+  const wool = /羊毛/.test(bits);
+  const sun = /太阳|阳光/.test(bits);
+  const ground = /地面|贴地|低机位/.test(bits);
+  const fallback = {
+    characters: [{ name: sun ? '奔向太阳的人' : '舞者', desc: bits.slice(0, 180) || '全片唯一的表演者' }],
+    locations: [{ name: ground ? '贴地的旷野' : '主场景', desc: bits.slice(0, 180) || '全片发生的空间' }],
+    props: [{ name: wool ? '被风吹动的羊毛' : (analysis.motif || '母题物'), desc: analysis.motif || bits.slice(0, 120) || '反复出现的物件' }],
+  };
+  const pick = (list, fb) => (list && list.length ? list : fb);
+  return {
+    characters: pick(analysis.characters, fallback.characters).slice(0, 3),
+    locations: pick(analysis.locations, fallback.locations).slice(0, 2),
+    props: pick(analysis.props, fallback.props).slice(0, 3),
+  };
+}
+
+function downbeatGrid(analysis) {
+  const beats = beatGrid(analysis);
+  let downs = (analysis.downbeats || []).filter((t) => t >= 0 && t < analysis.durationSec);
+  if (downs.length < 4) downs = beats.filter((_, i) => i % 4 === 0);
+  if (!downs.length || downs[0] > 0.05) downs = [0].concat(downs);
+  return downs;
+}
+
+function splitSectionRanges(sec, maxClip, downs) {
+  const ranges = [];
+  let t = sec.startSec;
+  const end = sec.endSec;
+  let guard = 0;
+  while (t < end - 0.05 && guard++ < 64) {
+    if (end - t <= maxClip + 0.05) {
+      ranges.push([t, end]);
+      break;
+    }
+    let cut = Math.min(end, t + maxClip);
+    const inside = downs.filter((b) => b >= t + 4 && b <= t + maxClip + 0.02);
+    if (inside.length) cut = inside[inside.length - 1];
+    if (end - cut < 4) {
+      const earlier = downs.filter((b) => b >= t + 4 && b <= end - 4);
+      if (earlier.length) cut = earlier[earlier.length - 1];
+      else if (end - t > 8) cut = end - 4;
+    }
+    if (!(cut > t + 0.4) || cut - t > maxClip + 0.05) cut = Math.min(end, t + maxClip);
+    ranges.push([t, round3(cut)]);
+    t = cut;
+  }
+  return ranges;
+}
+
+function shotCuts(start, end, downs) {
+  const marks = downs.filter((b) => b > start + 0.45 && b < end - 0.45);
+  const pts = [start];
+  for (const m of marks) {
+    if (m - pts[pts.length - 1] >= 0.45) pts.push(m);
+  }
+  if (end - pts[pts.length - 1] < 0.45 && pts.length > 1) pts[pts.length - 1] = end;
+  else pts.push(end);
+  const spans = [];
+  for (let i = 0; i < pts.length - 1; i++) spans.push([pts[i], pts[i + 1]]);
+  return spans.length ? spans : [[start, end]];
+}
+
+const SCALES = ['远景', '全景', '中景', '近景', '特写'];
+const ANGLES = ['平视', '低机位', '俯拍', '侧向'];
+
+function writeShotCopy(ctx) {
+  const who = '@' + ctx.who + '@';
+  const where = '@' + ctx.where + '@';
+  const prop = '@' + ctx.prop + '@';
+  const secName = sectionLabelZh(ctx.section.label);
+  const bit = ctx.bit;
+  const light = ctx.light;
+  const cut = round1(ctx.cutAt);
+  const visual = [
+    ctx.scale + '，' + ctx.angle + '机位，运镜' + ctx.move,
+    who + ' 在 ' + where + '，' + prop + ' 在画面里',
+    bit,
+    '段落「' + secName + '」',
+    ctx.hold ? '音乐继续，画面停住' : '',
+  ].filter(Boolean).join('。') + '。';
+  const camera = '景别' + ctx.scale + '；机位' + ctx.angle + '；运镜' + ctx.move + '。切点卡在 ' + cut + 's 的重拍上';
+  const motion = ctx.hold
+    ? '起点：' + who + '已经停在画面里 → 镜头完全固定，只有风和光在动 → 终点：仍停着，这是全片的「停」'
+    : '起点：' + ctx.scale + '里' + who + '刚要动 → ' + ctx.move + '，动作踩上拍点 → 终点：动作进行到一半，不站定';
+  const imagePrompt = [
+    '电影关键帧，' + ctx.scale + '，' + ctx.angle + '机位',
+    who + '，' + where + '，' + prop,
+    light,
+    bit,
+    '无字幕，无水印，无文字',
+  ].join('，');
+  const videoPrompt = [
+    round1(ctx.dur) + ' 秒',
+    camera,
+    motion,
+    '光与色彩：' + light,
+    '切点必须落在 ' + cut + ' 秒的重拍，不能晚一帧',
+    bit,
+    ctx.hold ? '这一镜是全片的停：音乐不停，画面停住' : '',
+  ].filter(Boolean).join('。') + '。';
+  return { visual, camera, motion, imagePrompt, videoPrompt, light };
+}
+
 /**
- * 按段落和拍点铺镜头。
- * 切点（scene_change / closeup / opening）保证现有 planShotSegments 能在 ≤ maxClipSeconds 处切开，
- * 且不会把一段 continuation 拆进两次生成。单镜不超过 12s，短于 0.4s 的拍会合并（MV 规格 ASL 下限）。
+ * 把听歌结果铺成整支 MV：场（≤15s）→ 镜（卡在重拍），每镜都有关键帧提示词和视频提示词。
+ * 模型只给了一段摘要时，按曲式把全曲拆开，而不是停在那一段话上。
  */
-export function planMusicVideoShots(analysis, opts) {
+export function planMusicVideoPackage(analysis, opts) {
   const a = normalizeAnalysis(analysis, {
     source: analysis && analysis.source,
     method: analysis && analysis.method,
@@ -606,151 +1202,297 @@ export function planMusicVideoShots(analysis, opts) {
     durationSec: analysis && analysis.durationSec,
     warnings: analysis && analysis.warnings,
   });
-  const maxClip = Math.max(2, Math.min(15, num(opts && opts.maxClipSeconds, 15) || 15));
-  const brief = str(opts && opts.brief, 400);
-  const beats = beatGrid(a);
-  const motif = a.motif || '一个反复出现的物件';
-  const imagery = a.imagery.length ? a.imagery : ['与歌曲情绪一致的具体空间'];
-  const shots = [];
-  const dur = a.durationSec;
-
-  const shotCap = Math.min(12, maxClip);
-  const pushSpan = (start, end, section, indexInSection, hold) => {
-    let t = start;
-    const strat = strategyFor(section.label);
-    const stepBeats = Math.max(1, strat.beats);
-    const inSection = beats.filter((b) => b >= start - 0.001 && b < end - 0.001);
-    const grid = inSection.length ? inSection : [start];
-    let guard = 0;
-    while (t < end - 0.05 && shots.length < 100) {
-      let shotEnd = end;
-      const beatIdx = grid.findIndex((b) => b >= t - 0.001);
-      if (beatIdx >= 0) {
-        const nxt = grid[beatIdx + stepBeats];
-        shotEnd = nxt != null ? Math.min(end, nxt) : end;
-      }
-      if (shotEnd - t < 0.4) {
-        shotEnd = Math.min(end, t + 0.4);
-      }
-      if (shotEnd - t > shotCap) shotEnd = t + shotCap;
-      if (end - shotEnd < 0.4 && end - t <= shotCap) shotEnd = end;
-      shotEnd = Math.min(end, shotEnd);
-      if (!(shotEnd > t)) break;
-      const localIndex = indexInSection + shots.filter((s) => s.sectionId === section.id).length;
-      const isHold = !!(hold && localIndex === 0);
-      const scale = isHold ? '大特写' : (localIndex === 1 ? '大特写' : (localIndex % 5 === 0 ? strat.scale : ['全景', '中景', '近景', '特写'][localIndex % 4]));
-      const move = isHold ? '固定' : MOVES[(shots.length + localIndex) % MOVES.length];
-      const img = imagery[shots.length % imagery.length];
-      const lines = lyricsIn(a, t, shotEnd);
-      const relBeats = beats.filter((b) => b >= t - 0.001 && b < shotEnd - 0.001).slice(0, 3);
-      const span = shotEnd - t;
-      const timeBeats = (span >= 2 ? [0, span * 0.45, span * 0.9] : relBeats.length ? relBeats.map((b) => b - t) : [0]).slice(0, span >= 2 ? 3 : 1).map((off, k, arr) => {
-        const label = isHold
-          ? (k === 0 ? '画面已经停住，主体不动' : k === arr.length - 1 ? '仍停在同一姿态，音乐自己走' : '只有光或灰尘在动')
-          : (k === 0 ? '动作起势，身体或母题刚要动' : k === arr.length - 1 ? '落在下一拍之前，动作没做完' : '顺着拍点把动作推到中段');
-        return round1(off) + 's ' + label;
+  const allowed = normalizeDurations(opts && opts.allowedDurations);
+  const maxClip = allowed.length
+    ? allowed[allowed.length - 1]
+    : Math.max(4, Math.min(15, num(opts && opts.maxClipSeconds, 15) || 15));
+  const sections = productionSections(a);
+  const cast = castOf(a);
+  const downs = downbeatGrid(a);
+  const styleText = str(opts && (opts.brief || opts.style), 400);
+  const bits = clauseBits(a);
+  if (styleText) bits.unshift(styleText);
+  const who = cast.characters[0].name;
+  const where = cast.locations[0].name;
+  const prop = cast.props[0].name;
+  const warnings = (a.warnings || []).slice();
+  if (analysisIsThin(a)) warnings.push('听歌结果缺少逐段画面，已按全曲时长铺成完整分镜；有文本模型时会再写一版提示词。');
+  const scenes = [];
+  let shotSerial = 0;
+  sections.forEach((section) => {
+    const ranges = splitSectionRanges(section, maxClip, downs);
+    ranges.forEach(([start, end], part) => {
+      const cuts = shotCuts(start, end, downs);
+      const shots = cuts.map(([s0, s1], si) => {
+        const sameSectionCont = part > 0 && si === 0;
+        const scale = (section.label === 'bridge' && si === 0) || si === 1 ? '大特写' : SCALES[(shotSerial + si) % SCALES.length];
+        const move = MOVES[(shotSerial + si) % MOVES.length];
+        const angle = section.label === 'chorus' && /地面|贴地/.test(bits.join('')) ? '低机位' : ANGLES[(shotSerial + si) % ANGLES.length];
+        const light = section.color || ( /阳光|刺眼/.test(bits.join('')) ? '阳光刺眼，高反差' : (section.energy > 0.7 ? '硬光，高反差' : '柔光，低反差'));
+        const bit = [section.visual, bits[shotSerial % bits.length]].filter(Boolean).join('，');
+        const copy = writeShotCopy({
+          scale, move, angle, section, who, where, prop, light, bit,
+          cutAt: s0, dur: s1 - s0, hold: section.label === 'bridge' && si === 0,
+        });
+        const lines = lyricsIn(a, s0, s1);
+        const span = s1 - s0;
+        const timeBeats = (span >= 2 ? [0, span * 0.45, span * 0.9] : [0]).map((off, k, arr) => {
+          const label = k === 0 ? '起势' : k === arr.length - 1 ? '落在切点之前' : '踩上拍点';
+          return round1(off) + 's ' + label;
+        });
+        const shot = {
+          title: (sectionLabelZh(section.label) + ' ' + (si + 1)).slice(0, 40),
+          duration: round3(s1 - s0),
+          startSec: round3(s0),
+          endSec: round3(s1),
+          sectionLabel: section.label,
+          seg: 'continuation',
+          sameSectionCont,
+          visual: copy.visual,
+          motion: copy.motion,
+          camera: copy.camera,
+          light: copy.light,
+          cutAt: round3(s0),
+          imagePrompt: copy.imagePrompt,
+          videoPrompt: copy.videoPrompt,
+          timeBeats,
+          vfx: section.label === 'chorus' ? '光随重拍抬起，不滥用光斑' : '',
+          negative: 'off-beat cut, cut one frame after the beat, lip-sync drift, watermark, subtitle burned in, extra limbs',
+          tail: '动作进行到一半，' + prop + ' 仍在画面里，运镜没停死',
+          cam: move + '，可被下一镜延续',
+          start: '',
+          characters: cast.characters.map((c) => c.name),
+          scene: where,
+          props: cast.props.map((p) => p.name),
+          dialogue: lines.slice(0, 3).map((line) => ({ role: '人声', line: line.text })),
+          sfx: '原曲声轨，切在重拍' + ((section.instruments && section.instruments.length) ? '；' + section.instruments.slice(0, 3).join('、') : ''),
+        };
+        return shot;
       });
-      const title = (isHold ? '停 · ' : '') + sectionLabelZh(section.label) + ' ' + (localIndex + 1);
-      shots.push({
-        title: title.slice(0, 40),
-        duration: round1(shotEnd - t),
-        startSec: round3(t),
-        endSec: round3(shotEnd),
-        sectionId: section.id,
+      shotSerial += shots.length;
+      const sceneDur = round3(shots.reduce((s, sh) => s + sh.duration, 0));
+      scenes.push({
+        index: scenes.length + 1,
+        title: sectionLabelZh(section.label) + (ranges.length > 1 ? ' ' + (part + 1) : ''),
         sectionLabel: section.label,
-        visual: [
-          scale + '，平视，主体落在三分法交点',
-          '母题「' + motif + '」',
-          img,
-          strat.note,
-          section.mood ? ('情绪：' + section.mood) : '',
-          brief ? ('方向：' + brief) : '',
-          isHold ? '音乐继续，画面停住——这是全片唯一的坠落感' : '',
-        ].filter(Boolean).join('；') + '。',
-        motion: isHold
-          ? '起点：主体已经在画面里静止 → 镜头完全不动、只有环境微动 → 终点：停在同一姿态，不收成"已完成"'
-          : '起点：' + scale + '里母题刚入画 → ' + move + '，动作卡在拍点上 → 终点：动作进行到一半，不站定',
-        timeBeats,
-        camera: '平视，35mm，运镜' + move + '，从本镜开始的构图走到下一拍之前',
-        vfx: section.label === 'chorus' ? '光随副歌能量抬起，但不滥用光斑' : '',
-        negative: 'off-beat cut, cut one frame after the beat, lip-sync drift, random slow motion, stock footage look, watermark, subtitle burned in, extra limbs',
-        tail: isHold ? '主体仍停在同一姿态，目光不散，动作没有收完' : '动作进行到一半，母题还在手上或画面里，运镜没停死',
-        cam: move + '，可被下一镜延续，不突然反向',
-        start: '',
-        seg: 'continuation',
-        characters: [],
-        scene: sectionLabelZh(section.label),
-        props: motif ? [motif] : [],
-        dialogue: lines.slice(0, 4).map((line) => ({ role: '人声', line: line.text })),
-        sfx: '原曲声轨，切点落在拍上' + (a.instrumentation.length ? ('；' + a.instrumentation.slice(0, 3).join('、')) : ''),
-        hold: isHold,
+        startSec: round3(start),
+        endSec: round3(end),
+        duration: sceneDur,
+        continued: part > 0,
+        shots,
       });
-      t = shotEnd;
-      guard++;
-      if (guard > 400) break;
-    }
-  };
-
-  a.sections.forEach((section) => {
-    const hold = section.label === 'bridge';
-    pushSpan(section.startSec, section.endSec, section, 0, hold);
+    });
   });
-
-  if (shots.length) {
-    const last = shots[shots.length - 1];
-    if (dur - last.endSec > 0.05 && dur - last.endSec <= shotCap) {
-      const grown = round1(Math.max(0.4, dur - last.startSec));
-      if (grown <= shotCap) {
-        last.endSec = round3(dur);
-        last.duration = grown;
+  if (scenes.length && scenes[0].shots.length) {
+    scenes[0].shots[0].seg = 'opening';
+    scenes[0].shots[0].start = '歌曲第 0 秒，从这一镜建立世界';
+  }
+  scenes.forEach((sc, si) => {
+    sc.shots.forEach((shot, i) => {
+      if (si === 0 && i === 0) return;
+      if (i === 0) {
+        // 每一场的第一镜都是切点，这样整表摊平后也不会把两场 continuation 粘成超过 15 秒。
+        // 同一段落被 15 秒上限切开时，continued 仍为 true，成片用尾帧接这一场的首帧。
+        shot.seg = 'scene_change';
+        shot.start = sc.continued
+          ? '同一段落因单次生成上限切开，成片用上一段尾帧接这一镜'
+          : '新段落「' + sectionLabelZh(sc.sectionLabel) + '」从这一镜切开';
+      } else {
+        shot.seg = 'continuation';
+        shot.start = '';
       }
+    });
+  });
+  if (scenes.length) {
+    const lastScene = scenes[scenes.length - 1];
+    const last = lastScene.shots[lastScene.shots.length - 1];
+    if (last) {
+      last.endSec = round3(a.durationSec);
+      const sumBefore = scenes.reduce((s, sc) => s + sc.shots.reduce((x, sh) => x + sh.duration, 0), 0) - last.duration;
+      last.duration = round3(Math.max(0.4, a.durationSec - sumBefore));
+      lastScene.endSec = last.endSec;
+      lastScene.duration = round3(lastScene.shots.reduce((s, sh) => s + sh.duration, 0));
     }
   }
-
-  let acc = 0;
-  shots.forEach((shot, i) => {
-    const prev = shots[i - 1];
-    const sectionChanged = !prev || prev.sectionId !== shot.sectionId;
-    if (i === 0) {
-      shot.seg = 'opening';
-      shot.start = '歌曲第 0 秒，画面从这一镜建立';
-      acc = shot.duration;
-      return;
-    }
-    if (sectionChanged || shot.hold) {
-      shot.seg = shot.hold ? 'scene_change' : strategyFor(shot.sectionLabel).cut;
-      if (shot.seg !== 'scene_change' && shot.seg !== 'closeup') shot.seg = 'scene_change';
-      shot.start = '新段落「' + sectionLabelZh(shot.sectionLabel) + '」从这一镜切开，不接上一段的动作相位';
-      acc = shot.duration;
-      return;
-    }
-    if (acc + shot.duration > maxClip + 1e-6) {
-      shot.seg = 'closeup';
-      shot.visual = shot.visual.replace(/^(远景|全景|中景|近景|特写|大特写)/, '大特写');
-      shot.start = '为了单次生成不超过 ' + maxClip + ' 秒，这一镜从切点开始（大特写），不接上一段尾帧';
-      acc = shot.duration;
-      return;
-    }
-    shot.seg = 'continuation';
-    shot.start = '';
-    acc += shot.duration;
-  });
-
-  const cleaned = shots.map((shot) => {
-    const out = { ...shot };
-    delete out.sectionId;
-    delete out.hold;
-    return out;
-  });
-  return {
-    shots: cleaned,
-    total: round1(cleaned.reduce((s, sh) => s + sh.duration, 0)),
-    maxClipSeconds: maxClip,
-    bpm: a.bpm,
+  const style = [a.mood, (a.genre || []).join(' / '), clauseBits(a)[0]].filter(Boolean).join('。');
+  return stampGeneration(applyContinuity(decorateMusicPackage({
+    schema: 'dshic.mv-package.v1',
+    thin: analysisIsThin(a),
     durationSec: a.durationSec,
+    bpm: a.bpm,
     source: a.source,
-    warnings: a.warnings || [],
+    maxClipSeconds: maxClip,
+    treatment: {
+      title: str(opts && opts.title, 40) || '音乐视频',
+      logline: a.summary || bits[0],
+      style: (styleText ? styleText + '。' : '') + style.slice(0, 320),
+      styleAnchor: (styleText || bits[0] || '').slice(0, 80),
+    },
+    downbeats: downs,
+    characters: cast.characters.map((c) => ({
+      name: c.name,
+      desc: c.desc || (c.name + '，全片保持同一张脸、同一身衣服'),
+      imagePrompt: '角色设定图，' + c.name + '，三视图，中性背景，' + (c.desc || style).slice(0, 80) + '，无文字',
+    })),
+    locations: cast.locations.map((c) => ({
+      name: c.name,
+      desc: c.desc || c.name,
+      imagePrompt: '场景设定图，' + c.name + '，宽画幅，' + (c.desc || style).slice(0, 80) + '，无人，无文字',
+    })),
+    props: cast.props.map((c) => ({
+      name: c.name,
+      desc: c.desc || c.name,
+      imagePrompt: '道具设定图，' + c.name + '，白底，' + (c.desc || '').slice(0, 60) + '，无文字',
+    })),
+    scenes,
+    warnings,
+    ...(allowed.length ? { genDefaults: { allowedDurations: allowed, model: null, resolution: null } } : {}),
+  }, a)));
+}
+
+export function planMusicVideoShots(analysis, opts) {
+  const pkg = planMusicVideoPackage(analysis, opts);
+  const shots = [];
+  for (const sc of pkg.scenes) {
+    for (const sh of sc.shots) {
+      const out = { ...sh };
+      delete out.sameSectionCont;
+      shots.push(out);
+    }
+  }
+  return {
+    shots,
+    total: round3(shots.reduce((s, sh) => s + sh.duration, 0)),
+    maxClipSeconds: pkg.maxClipSeconds,
+    bpm: pkg.bpm,
+    durationSec: pkg.durationSec,
+    source: pkg.source,
+    warnings: pkg.warnings,
+    package: pkg,
   };
+}
+
+export function mergeCreative(pkg, creative) {
+  const c = creative && typeof creative === 'object' ? creative : {};
+  const next = JSON.parse(JSON.stringify(pkg));
+  if (c.treatment && typeof c.treatment === 'object') {
+    if (c.treatment.logline) next.treatment.logline = str(c.treatment.logline, 400);
+    if (c.treatment.style) next.treatment.style = str(c.treatment.style, 400);
+    if (c.treatment.styleAnchor) next.treatment.styleAnchor = str(c.treatment.styleAnchor, 80);
+  }
+  const overlayList = (base, incoming) => {
+    if (!Array.isArray(incoming)) return base;
+    return base.map((item, i) => {
+      const src = incoming[i];
+      if (!src || typeof src !== 'object') return item;
+      return {
+        ...item,
+        desc: src.desc ? str(src.desc, 240) : item.desc,
+        imagePrompt: src.imagePrompt ? str(src.imagePrompt, 500) : item.imagePrompt,
+      };
+    });
+  };
+  next.characters = overlayList(next.characters, c.characters);
+  next.locations = overlayList(next.locations, c.locations);
+  next.props = overlayList(next.props, c.props);
+  if (Array.isArray(c.scenes)) {
+    next.scenes.forEach((sc, si) => {
+      const src = c.scenes[si];
+      if (!src || !Array.isArray(src.shots)) return;
+      sc.shots.forEach((shot, i) => {
+        const s = src.shots[i];
+        if (!s || typeof s !== 'object') return;
+        if (s.visual) shot.visual = str(s.visual, 500);
+        if (s.camera) shot.camera = str(s.camera, 240);
+        if (s.motion) shot.motion = str(s.motion, 400);
+        if (s.light) shot.light = str(s.light, 120);
+        if (s.imagePrompt) shot.imagePrompt = str(s.imagePrompt, 600);
+        if (s.videoPrompt) shot.videoPrompt = str(s.videoPrompt, 800);
+      });
+    });
+  }
+  next.thin = false;
+  return next;
+}
+
+export function llmCreativeUserPrompt(pkg) {
+  const lines = [
+    '下面是一支音乐 MV 的时间网格。时间码已经按歌曲卡死，禁止改 startSec、endSec、duration。',
+    '请只补文字，返回 JSON：{treatment:{logline,style,styleAnchor}, characters:[{desc,imagePrompt}], locations:[...], props:[...], scenes:[{shots:[{visual,camera,motion,light,imagePrompt,videoPrompt}]}]}。',
+    'scenes 与 shots 的数量和顺序必须与网格一致。imagePrompt 是可直接文生图的关键帧；videoPrompt 是可直接生成视频的提示词，含景别、机位、运镜、动作、光、以及切在重拍上。',
+    '歌曲摘要：' + (pkg.treatment && pkg.treatment.logline || ''),
+    '风格：' + (pkg.treatment && pkg.treatment.style || ''),
+  ];
+  pkg.scenes.forEach((sc, si) => {
+    lines.push('场' + si + ' ' + sc.title + ' ' + sc.startSec + '-' + sc.endSec + 's');
+    sc.shots.forEach((sh, i) => {
+      lines.push('  镜' + si + '.' + i + ' ' + sh.startSec + '-' + sh.endSec + 's ' + sh.sectionLabel + ' 现有画面：' + String(sh.visual || '').slice(0, 80));
+    });
+  });
+  return lines.join('\n');
+}
+
+/** 在节拍网格内改一镜：时长会吸到最近的重拍，后一镜让出或吃进同样的时间，整曲时长不变。 */
+export function patchPackageShot(pkg, sceneIndex, shotIndex, patch) {
+  const next = JSON.parse(JSON.stringify(pkg));
+  const sc = (next.scenes || [])[sceneIndex];
+  if (!sc) throw new Error('场不存在');
+  const shot = (sc.shots || [])[shotIndex];
+  if (!shot) throw new Error('镜不存在');
+  const p = patch || {};
+  for (const k of ['visual', 'camera', 'motion', 'light', 'imagePrompt', 'videoPrompt', 'title']) {
+    if (p[k] != null) shot[k] = str(p[k], k === 'videoPrompt' || k === 'imagePrompt' ? 1600 : 500);
+  }
+  if (p.join === 'cut' || p.join === 'continuous') {
+    sc.join = p.join;
+    sc.continued = p.join === 'continuous';
+    for (const sh of sc.shots || []) sh.transition = p.join;
+  }
+  if (p.keep === true || p.keep === false) {
+    sc.keep = p.keep;
+    sc.genMode = p.keep ? 'keep' : (sc.capabilityPath || 'reference-to-video');
+  }
+  if (p.refs && typeof p.refs === 'object') {
+    sc.refs = {
+      characters: (p.refs.characters || []).map((n) => str(n, 40)).filter(Boolean),
+      locations: (p.refs.locations || []).map((n) => str(n, 40)).filter(Boolean),
+      props: (p.refs.props || []).map((n) => str(n, 40)).filter(Boolean),
+    };
+  }
+  if (p.duration != null) {
+    const want = num(p.duration, shot.duration);
+    const downs = (next.downbeats || []).filter((t) => t > shot.startSec + 0.35 && t < sc.endSec - 0.05);
+    let end = shot.startSec + Math.max(0.4, want);
+    if (downs.length) {
+      end = downs.reduce((best, t) => (Math.abs(t - end) < Math.abs(best - end) ? t : best), downs[0]);
+    }
+    end = Math.min(sc.endSec, Math.max(shot.startSec + 0.4, end));
+    const nextShot = sc.shots[shotIndex + 1];
+    if (nextShot && sc.endSec - end < 0.4) end = Math.max(shot.startSec + 0.4, sc.endSec - 0.4);
+    shot.endSec = round3(end);
+    shot.duration = round3(shot.endSec - shot.startSec);
+    shot.cutAt = shot.startSec;
+    if (nextShot) {
+      nextShot.startSec = shot.endSec;
+      nextShot.duration = round3(Math.max(0.4, nextShot.endSec - nextShot.startSec));
+      nextShot.cutAt = nextShot.startSec;
+    }
+    sc.duration = round3(sc.shots.reduce((s, sh) => s + sh.duration, 0));
+  }
+  const fit = snapGenerationDuration(sc.duration, next.genDefaults && next.genDefaults.allowedDurations);
+  const prev = sc.gen || {};
+  const hadClip = !!(prev.assetId);
+  sc.gen = {
+    status: hadClip ? 'stale' : (prev.status || 'idle'),
+    assetId: prev.assetId || null,
+    actualSec: prev.actualSec == null ? null : prev.actualSec,
+    history: Array.isArray(prev.history) ? prev.history : [],
+    stale: hadClip || !!prev.stale,
+    requestSec: fit.requestSec,
+    slotSec: fit.slotSec,
+    warn: fit.warn || '',
+  };
+  return next;
 }
 
 export function sectionLabelZh(label) {

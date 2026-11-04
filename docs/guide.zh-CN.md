@@ -174,7 +174,8 @@
 - **兼容性**：OpenAI 风格任务接口、Seedance 原生 `content[]`、Sora 风格 `/v1/videos` 自动识别与降级；分辨率/比例/首帧/参考图按厂商惯例自动转换；
 - **文本模型**直接使用 Harness 当前配置的模型，无需额外 Key；
 - **TTS 配音**：同一供应商结构，按镜配音混入成片。
-- **音频理解（音乐 MV）**：同样是供应商 + 模型两级，★ 为默认。预填北京百炼兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 id 预填 `qwen3.8-omni-flash`（也就是 Qwen3.8-Omni-Flash；旧的 `qwen3-omni-flash` 可以手改）。国际站或工作空间端点按控制台粘贴。请求由本机宿主发出，并强制 `stream: true`。不配置时，分析会标明本地节拍或占位，流水线仍能离线跑通。
+- **音频理解（音乐 MV）**：同样是供应商 + 模型两级，★ 为默认。预设三个端点：北京 `https://dashscope.aliyuncs.com/compatible-mode/v1`（模型 `qwen3.8-omni-flash`，也就是 Qwen3.8-Omni-Flash）、新加坡 `https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1`（模型 `qwen3-omni-flash`）、国际站 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`。请求由本机宿主发出，并强制 `stream: true`。不配置时，分析会标明本地节拍或占位，流水线仍能离线跑通。
+- **音乐时间轴**：音频节点是一块 920×600 的编辑器。上传任意歌曲后点「生成时间轴」，段落说明、镜头数和时长都从这首歌的分析和当前视频模型允许的秒数来，不套固定故事。有角色就做面孔和选角，没有角色就当表演或抽象画面。场景要先有主图，引用它的镜头才会放行。用户指出某一镜有问题，只改那一镜并等确认后再生成。成片把字幕留在可编辑的字幕轨上，不烧进画面。风格句写进全部提示词。「导入原片」用帧差把原 MV 切成镜头再重拍；供应商没有视频到视频时，自动改用关键帧编辑或参考图。
 
 ---
 

@@ -174,6 +174,99 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(!segPlan.segments.some((s) => s.seamRisk === 'forced'), '按拍分镜被切段器标成硬切：' + (segPlan.warnings || []).join(' | '));
 }
 
+{
+  const thin = {
+    schema: 'dshic.audio-analysis.v1',
+    source: 'qwen-omni',
+    method: 'model',
+    durationSec: 180,
+    bpm: 128,
+    summary: '一首充满原始生命力的电子舞曲。镜头应紧贴地面高速移动，捕捉风吹动羊毛的质感与阳光刺眼的瞬间，剪辑节奏需完全卡在重拍上。',
+    sections: [],
+  };
+  const pkg = AD.planMusicVideoPackage(thin, { style: '贴地高速、羊毛和刺眼阳光' });
+  const shots = pkg.scenes.flatMap((sc) => sc.shots);
+  ok(pkg.durationSec === 180, '三分钟曲子时长不是 180：' + pkg.durationSec);
+  const sum = Math.round(shots.reduce((s, sh) => s + sh.duration, 0) * 10) / 10;
+  ok(Math.abs(sum - 180) < 0.2, '镜头时长加总不是整首歌：' + sum);
+  ok(pkg.scenes.every((sc) => sc.duration <= 15.05), '有场超过 15 秒');
+  ok(shots.every((sh) => sh.imagePrompt && sh.videoPrompt && /景别/.test(sh.camera)), '缺关键帧/视频提示词或景别');
+  ok(shots.every((sh) => /【风格锁】/.test(sh.videoPrompt)), '风格锁没有写进每镜视频提示词');
+  ok(pkg.scenes.some((sc) => sc.join === 'continuous') && pkg.scenes.some((sc) => sc.join === 'cut'), '硬切和续帧没有同时出现');
+  ok(pkg.scenes.every((sc) => sc.refs && sc.refs.locations && sc.refs.locations.length), '场上没有绑定场景参考');
+  const snap = AD.snapGenerationDuration(7.2);
+  ok(snap.requestSec === 8 && snap.slotSec === 7.2 && snap.warn, '7.2 秒没有吸到 8 秒并给出裁切说明');
+  const edited = AD.patchPackageShot(pkg, 0, 0, { videoPrompt: '改过的提示词', duration: 6 });
+  ok(edited.scenes[0].shots[0].videoPrompt === '改过的提示词', '改提示词没有写回');
+  ok(edited.scenes[0].gen && edited.scenes[0].gen.requestSec, '改完没有重算生成时长');
+  const sg = AD.AUDIO_ENDPOINT_PRESETS.find((p) => p.id === 'singapore');
+  ok(sg && sg.baseUrl.includes('ap-southeast-1') && sg.model === 'qwen3-omni-flash', '新加坡端点预设不对');
+}
+
+{
+  const diffs = [0, 0.02, 0.5, 0.03, 0.04, 0.4];
+  const cuts = AD.cutsFromDiffs(diffs, 1, 0.18);
+  ok(cuts[0] === 0 && cuts.includes(2) && cuts.includes(5), '帧差切点不对：' + cuts.join(','));
+  const remix = AD.buildRemixPackage({ durationSec: 40, summary: '原片' }, {
+    cuts: [10, 22],
+    descriptions: ['人物冲镜', '侧脸特写', '拉远'],
+    replacements: [{ name: '糯糯' }],
+    style: '恶搞，人物替换',
+    keep: [1],
+    provider: { imageMode: 'edits' },
+  });
+  ok(remix.remix === true && remix.scenes.length >= 3, '翻拍没有按切点铺场');
+  ok(Math.abs(remix.scenes.reduce((s, sc) => s + sc.duration, 0) - 40) < 0.2, '翻拍时长没有盖住原曲');
+  ok(remix.scenes.every((sc) => sc.duration <= 15.05), '翻拍单场超过 15 秒');
+  ok(remix.scenes[1].keep === true && remix.scenes[1].genMode === 'keep', '指定场没有保留原片');
+  ok(remix.scenes[0].genMode === 'first-frame-edit', '图片编辑模式没有走关键帧编辑：' + remix.scenes[0].genMode);
+  ok(/糯糯/.test(remix.scenes[0].shots[0].videoPrompt) && /恶搞/.test(remix.scenes[0].shots[0].videoPrompt), '替换角色或恶搞风格没有进提示词');
+  const plain = AD.detectRemixCapabilities({});
+  ok(plain.path === 'reference-to-video' && plain.videoToVideo === false, '缺省能力应该退到参考图重拍');
+  const v2v = AD.detectRemixCapabilities({ videoExtra: '{"mode":"video-to-video"}' });
+  ok(v2v.path === 'video-to-video' && /没有通用的视频到视频/.test(v2v.note), '提到视频编辑时没有说明实际退回');
+}
+
+{
+  // 夹具：任意一首短歌，用来证明成片包只吃分析结果，不吃某支示例 MV 的故事或模型名。
+  const pkg = AD.planMusicVideoPackage({
+    durationSec: 48,
+    bpm: 96,
+    summary: '雨夜的器乐',
+    characters: [{ name: '阿禾', desc: '短发，深色外套' }],
+    locations: [{ name: '雨棚', desc: '夜里的公交站雨棚' }],
+    sections: [
+      { label: 'verse', startSec: 0, endSec: 24, visual: '鼓点很稳，贝斯在走' },
+      { label: 'chorus', startSec: 24, endSec: 48, visual: '合成器铺开' },
+    ],
+    lyrics: [{ startSec: 2, endSec: 6, text: '测试句' }],
+  }, { style: '冷色，手持', allowedDurations: [5, 10] });
+  ok(pkg.script.includes('[Tempo Lock - 96 BPM]'), '剧本没有写上这首歌自己的 BPM');
+  ok(pkg.sections[0].line.includes('鼓点很稳'), '段落说明没有用分析原文');
+  ok(pkg.characters[0].faceId && pkg.characters[0].castingCount === 1, '角色缺少面孔或选角张数');
+  ok(pkg.locations[0].mainPrompt && pkg.locations[0].multiViewPrompt && pkg.locations[0].hasMain === false, '场景主图/多视角没有从场景自己的描述来');
+  ok(pkg.scenes.some((sc) => /阿禾×1/.test(sc.shots[0].videoPrompt)), '人数锁没有用这一包里的角色');
+  ok(!/150 BPM|minimax|VaporWave|喜羊羊|一家四口/.test(JSON.stringify(pkg)), '成片包写进了示例片内容');
+  ok(pkg.burnSubtitles === false && pkg.subtitleTrack[0].text === '测试句', '字幕没有留在可编辑轨上');
+  ok(pkg.scenes.every((sc) => sc.duration <= 10.05), '没有按模型允许的最长秒数拆段');
+  ok(pkg.genDefaults && pkg.genDefaults.model == null && pkg.genDefaults.allowedDurations[1] === 10, '模型名应留空，时长档应记下');
+  ok(AD.missingSceneRefs(pkg).some((b) => b.location === '雨棚'), '没有主图时没有拦住');
+  pkg.locations[0].hasMain = true;
+  ok(AD.missingSceneRefs(pkg).length === 0, '主图齐了还在拦');
+  const revised = AD.reviseShotPrompt(pkg, 0, 0, '多了一个人');
+  ok(revised.scenes[0].awaitingConfirm && /多了一个人/.test(revised.scenes[0].shots[0].videoPrompt), '返修没有写进用户原话');
+  ok(revised.scenes[1].shots[0].videoPrompt === pkg.scenes[1].shots[0].videoPrompt, '返修改动了别的镜');
+  ok(AD.confirmShot(revised, 0).scenes[0].awaitingConfirm === false, '确认后仍停在待确认');
+  ok(AD.snapGenerationDuration(7.2, [5, 10]).requestSec === 5, '自定义时长档没有就近吸附');
+  const bare = AD.decorateMusicPackage({
+    bpm: 100, durationSec: 8, treatment: { style: '只有光' },
+    characters: [], locations: [],
+    scenes: [{ sectionLabel: 'instrumental', startSec: 0, endSec: 8, duration: 8, shots: [{ duration: 8, visual: '光在动', videoPrompt: '光在动', camera: '景别远景' }] }],
+  }, {});
+  ok(bare.stages.find((s) => s.id === 'cast').status === 'skip', '没有角色时仍要求选角');
+  ok(!/各只出现一人/.test(bare.scenes[0].shots[0].videoPrompt), '没有角色却写了人数锁');
+}
+
 // ---------- 对话工具：分析 → 分镜 → 成片声轨 ----------
 {
   const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ic-audio-'));
@@ -188,7 +281,7 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
     tools: { register: (def) => { tools.push(def); return () => {}; } },
   });
   const byName = new Map(tools.map((t) => [t.name, t]));
-  for (const name of ['canvas_analyze_audio', 'canvas_music_video']) {
+  for (const name of ['canvas_analyze_audio', 'canvas_music_video', 'canvas_music_timeline', 'canvas_music_timeline_edit', 'canvas_music_remix']) {
     ok(byName.has(name), '缺少工具 ' + name);
   }
   const created = await byName.get('canvas_create_project').execute({ name: '音频MV测试' }, {});
@@ -204,7 +297,10 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   const mv = await byName.get('canvas_music_video').execute({ projectId, nodeId: analyzed.nodeId, brief: '雨' }, {});
   ok(mv.ok === true && mv.shotCount > 0 && mv.segmentCount >= 1, 'MV 工具没有铺出分镜：' + (mv && mv.text));
   const sb = await byName.get('canvas_node_status').execute({ projectId, nodeId: mv.storyboardNodeId }, {});
-  ok(Array.isArray(sb.shots) && sb.shots.length === mv.shotCount, '分镜表镜头数与工具回执不一致');
+  const docNow = JSON.parse(fs.readFileSync(path.join(process.env.DSH_IC_PROJECTS_DIR, projectId + '.json'), 'utf8'));
+  const boards = Object.values(docNow.nodes || {}).filter((n) => n && n.type === 'storyboard' && n.data && n.data.mvFrom);
+  const shotSum = boards.reduce((s, n) => s + ((n.data.shots && n.data.shots.length) || 0), 0);
+  ok(Array.isArray(sb.shots) && shotSum === mv.shotCount, '分镜表镜头数与工具回执不一致 ' + shotSum + ' vs ' + mv.shotCount);
   ok(sb.shots.every((s) => ['opening', 'continuation', 'scene_change', 'closeup', 'new_character', 'state_jump'].includes(s.seg)), '分镜 seg 不在切段器认识的取值里');
   const audioStatus = await byName.get('canvas_node_status').execute({ projectId, nodeId: analyzed.nodeId }, {});
   ok(audioStatus.analysis && audioStatus.analysis.schema === 'dshic.audio-analysis.v1', '节点状态没有带回分析摘要');
@@ -218,6 +314,19 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(profile.form === 'music-video', '项目规格没有写成 music-video');
   const again = await byName.get('canvas_analyze_audio').execute({ projectId, nodeId: analyzed.nodeId }, {});
   ok(again.cached === true, '已有分析应直接返回，不重复听');
+  const remixed = await byName.get('canvas_music_remix').execute({
+    projectId, nodeId: analyzed.nodeId, style: '恶搞，人物替换',
+    cuts: [8], descriptions: ['原镜人物挥手'], replacements: [{ name: '糯糯' }],
+    providerHint: { imageMode: 'generations' }, keep: [],
+  }, {});
+  ok(remixed.ok === true && remixed.path === 'reference-to-video', '翻拍工具没有退到参考图重拍：' + (remixed && remixed.path));
+  ok(remixed.package && remixed.package.scenes.every((sc) => sc.duration <= 15.05), '翻拍工具的场超过 15 秒');
+  const edited = await byName.get('canvas_music_timeline_edit').execute({
+    projectId, nodeId: analyzed.nodeId, sceneIndex: 0, shotIndex: 0,
+    patch: { join: 'continuous', refs: { characters: ['糯糯'], locations: ['原片场景'], props: [] } },
+  }, {});
+  ok(edited.ok === true && edited.package.scenes[0].join === 'continuous', '时间轴编辑没有改成续帧');
+  ok(edited.package.scenes[0].refs.characters[0] === '糯糯', '时间轴编辑没有改参考角色');
 }
 
 function loadSegmentPlanner() {

@@ -158,14 +158,19 @@ description: 用无限画布（Infinite Canvas）做短剧/视频创作时使用
 
 ## 一点五、音乐 MV（音频驱动）
 
-用户要「给这首歌做 MV / 音乐视频」时，不要先写一套与节拍无关的秒数。
+用户要「给这首歌做 MV / 音乐视频」时，不要停在一段画面摘要。一首歌要铺成整支时间轴：每一秒都有场、镜头、关键帧提示词和视频提示词。
 
 1. 规格：`canvas_skill_pack({ projectId, form: 'music-video', set: true, kind: 'storyboard' })`。
-2. 歌曲放上画布：已有音频资产就 `canvas_create_node({ type: 'audio', assetId })`，或让用户在音频节点上传。
-3. `canvas_analyze_audio`：全模态模型听歌（设置里的音频理解供应商；官方模型 id `qwen3.8-omni-flash`，即 Qwen3.8-Omni-Flash）。没配供应商时返回本地节拍或占位，向用户说明，不要假装模型听过。
-4. `canvas_node_status` 读分析摘要（BPM、段落、歌词、画面建议）。
-5. `canvas_music_video`：按段落和拍点写入分镜，接上视频节点，并把音频 `out` 接到成片 `music` 当原曲声轨。单次视频生成仍 ≤15 秒，段与段尾帧接首帧，沿用现有视频节点，不要按镜再建一串视频节点。
-6. 然后才 `canvas_run_node` 视频，再跑成片。
+2. 歌曲放上画布：已有音频资产就 `canvas_create_node({ type: 'audio', assetId })`，或让用户在音频节点上传。音频节点本身就是音乐时间轴。
+3. `canvas_analyze_audio`：全模态模型听歌（设置里的音频理解供应商；官方模型 id `qwen3.8-omni-flash`，即 Qwen3.8-Omni-Flash；新加坡端点常用 `qwen3-omni-flash`）。没配供应商时返回本地节拍或占位，向用户说明，不要假装模型听过。
+4. `canvas_music_timeline`：按用户的风格句生成整支时间轴（场 ≤15 秒，切在重拍上）。分析只有一段摘要时，工具会再要一次文本模型补全提示词；失败也保留按歌曲铺好的分镜，不要自己停在摘要。
+5. 要改某一镜用 `canvas_music_timeline_edit`（剧情、提示词、时长、硬切/续帧、这一场绑定的角色/场景/道具参考、保留原片）。改过且已有成片的场会标成过期。
+6. `canvas_music_video` 把时间轴推到画布：设定集、参考图、每场分镜和视频、成片接原曲。用户已经改过时间轴时带 `keepPackage: true`。然后才 `canvas_run_node`。
+7. 翻拍已有 MV：`canvas_music_remix`。cuts 是原片切点（秒），descriptions 是每段一句画面，replacements 是替换角色，style 写「恶搞 / 人物替换」。providerHint 用来选择关键帧编辑或参考图重拍；没有视频到视频接口时按回执里的说明退回，不要假装已经做了视频编辑。某一场留原片就在 edit 里设 `keep: true`。
+
+连贯：同一地点的场共用地点参考；`join: "continuous"` 的边界用上一段尾帧接下一段首帧，`cut` 是卡在拍上的硬切。风格锁写在每镜提示词的「【风格锁】」里。生成后不一致警告沿用分镜一致性检查（未登记的角色/场景）加上成片时长和槽位对不上。
+
+阶段（同一个人依次做，生成前等用户确认）：编剧铺时间轴 → 有角色才做角色参考（面孔 id、选角张数）→ 场景主图和多视角（主图没有则对应镜头不要 `canvas_run_node`）→ 分镜师。用户指出某一镜的问题：`canvas_music_timeline_edit` 的 patch 只带 `complaint`（用户原话），不要生成；用户确认后再 `confirm: true`，并且只重跑这一镜，然后才批量跑其余。艺术总监合成时，成片 `burnSubtitles` 为 false，字幕在 `subtitleTrack` 里可改，不要只烧进成片。镜头数、时长、角色、场景、风格全部来自这首歌、用户的风格句和当前视频模型的时长档（`allowedDurations`），不要套固定故事或固定模型名。
 
 连线：音频 `fromPort: 'analysis'` → 分镜表 `toPort: 'music'`；音频 `fromPort: 'out'` → 成片 `toPort: 'music'`。
 
