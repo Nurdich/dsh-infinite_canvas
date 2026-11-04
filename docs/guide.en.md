@@ -170,6 +170,7 @@ Key points:
 - **Compatibility**: OpenAI-style task APIs, Seedance-native `content[]` and Sora-style `/v1/videos` are auto-detected with a fallback chain; resolution/ratio/first-frame/references are mapped to each vendor's conventions;
 - **Text models** use whatever Harness has configured — no extra keys;
 - **TTS voices**: same provider structure, mixed into the final cut per shot.
+- **Audio understanding (music videos)**: the same two-level provider + model list, with ★ as the default. The suggested endpoint is Beijing DashScope compatible mode `https://dashscope.aliyuncs.com/compatible-mode/v1`, and the suggested model id is `qwen3.8-omni-flash` (the name Qwen3.8-Omni-Flash; `qwen3-omni-flash` can be typed in by hand). Paste an international or workspace endpoint from the console if that is what you use. The host process sends the request and forces `stream: true`. With no provider, analysis is labeled as a local beat pass or a placeholder, so the pipeline still runs offline.
 
 ---
 

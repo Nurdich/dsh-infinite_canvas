@@ -20,6 +20,8 @@ spec:
 - 平台默认 youtube / bilibili / douyin。
 
 - **生成次数换算**：单次 3–8 秒。2 分钟的歌 ≈ 16–40 个片段（视 BPM 与镜头密度）。副歌碎切时一个 5 秒片段可能拆成 3–4 个切点用——**先按拍算切点，再决定每段生成多长**，不要反过来。
+- **先听歌，再写分镜。** 歌曲放上音频节点（上传 / 资产库 / `type:audio`）后，用 `canvas_analyze_audio` 听完整首。官方音频理解模型 id 是 `qwen3.8-omni-flash`（口头常称 Qwen3.8-Omni-Flash），走百炼 OpenAI 兼容接口。没配供应商时结果会标明本地节拍或占位，不要当成模型听过。
+- 分析 JSON（`dshic.audio-analysis.v1`）里有 BPM、拍点、段落时间、情绪、歌词和画面建议。`canvas_music_video` 按段落和拍点铺分镜：单次视频仍 ≤15 秒，段与段用尾帧接首帧。成片的 `music` 口接原曲，不要让生成视频的声音盖过歌。
 <!-- slice:story -->
 ## 结构块
 

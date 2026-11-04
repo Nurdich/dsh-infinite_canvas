@@ -39,6 +39,7 @@
   "files": [
     "index.js",
     "client.js",
+    "audio-drive.js",
     "icon.svg",
     "cordis.patch.yml",
     "locale/*.json",

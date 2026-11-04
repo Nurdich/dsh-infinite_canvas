@@ -14,6 +14,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizeSkillProfile, DEFAULT_SKILL_PROFILE } from './index-core-skill-profile.js';
+import {
+  SUGGESTED_MODEL_ID,
+  USER_MODEL_NAME,
+  DEFAULT_BASE_URL,
+  understandFromRequest,
+  planMusicVideoShots,
+  groupShotsForClips,
+  analysisDigest,
+  AUDIO_ANALYSIS_SCHEMA,
+} from './audio-drive.js';
 import { initPackBase, packInventory, allowedIds } from './skill-pack-loader.js';
 import { buildSkillPack, SKILL_CATALOG, renderInventory, renderProfile } from './skill-pack.js';
 
@@ -1978,7 +1988,7 @@ function nextNodePos(doc, type, connectFromId, size) {
   const H = (n) => Number(n && n.h) || 160;
   const W = (n) => Number(n && n.w) || 280;
   const nodes = Object.values(doc.nodes || {});
-  const EST_H = { storyboard: 360, video: 360, image: 360, script: 360, finalcut: 360, text: 360 };
+  const EST_H = { storyboard: 360, video: 360, image: 360, script: 360, finalcut: 360, text: 360, audio: 360 };
   // 媒体节点的真实外框比 360 高/宽（预览区按比例 + 固定栏）：建节点时传 size，避免估小后与邻居重叠
   const estH = (size && Number(size.h)) || EST_H[type] || 360;
   const estW = (size && Number(size.w)) || 360;
@@ -2441,7 +2451,7 @@ function canvasCreateNode(args) {
   const doc = readToolDoc(args);
   const rawType = String((args && args.type) || 'text');
   const type = normalizeNodeType(rawType);
-  if (!['script', 'text', 'image', 'video', 'storyboard', 'finalcut'].includes(type)) throw new Error('不支持的节点类型: ' + rawType);
+  if (!['script', 'text', 'image', 'video', 'storyboard', 'finalcut', 'audio'].includes(type)) throw new Error('不支持的节点类型: ' + rawType);
   const legacyType = rawType !== type ? rawType : '';
   const label = args && args.name ? String(args.name).slice(0, 40) : '';
   const prompt = String((args && args.prompt) || '');
@@ -2497,6 +2507,15 @@ function canvasCreateNode(args) {
     node.type = 'finalcut';
     node.w = 360; node.h = 360;
     node.data = { ...node.data, status: 'idle', error: null, resolution: (args && args.resolution) || '720P', ratio: (args && args.ratio) || '16:9', transition: 'none', progress: null, assetId: null, subs: {}, keepAudio: true };
+  } else if (type === 'audio') {
+    node = agentNode('text', '', pos.x, pos.y, label || '音频');
+    node.type = 'audio';
+    node.w = 360; node.h = 360;
+    node.data = {
+      ...node.data,
+      status: 'idle', error: null, assetId: (args && args.assetId) ? String(args.assetId) : null,
+      analysis: null, audioModel: '',
+    };
   } else if (type === 'script') {
     node = agentNode('script', prompt, pos.x, pos.y, label || defaultLabel(prompt));
   } else {
@@ -2784,6 +2803,8 @@ async function canvasNodeStatus(args) {
     seam: d.seam || null,
     historyAssetIds: Array.isArray(d.history) ? d.history.map((x) => x && x.assetId).filter(Boolean).slice(-20) : [],
     assetId: d.assetId || null,
+    // 音频节点：结构化听歌结果（对话侧做 MV 前先读它；完整拍点在节点上，这里给摘要）
+    analysis: n.type === 'audio' && d.analysis && typeof d.analysis === 'object' ? analysisDigest(d.analysis) : null,
     // 视频任务凭据：中断/超时后对话侧可凭 id 回查结果（钱花了就必须能找回）
     taskId: d.taskId || null,
     taskQueryUrl: d.taskQueryUrl || null,
@@ -3023,10 +3044,11 @@ const PORT_TABLE = {
   'text': { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
   'shot': { inputs: [{ id: 'char', kind: 'image' }, { id: 'scene', kind: 'image' }, { id: 'prop', kind: 'image' }], outputs: [{ id: 'visual', kind: 'text' }, { id: 'motion', kind: 'text' }] },
   'script': { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
-  'storyboard': { inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }], outputs: [{ id: 'out', kind: 'text' }, { id: 'tail', kind: 'text' }] },
+  'storyboard': { inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }, { id: 'music', kind: 'text' }], outputs: [{ id: 'out', kind: 'text' }, { id: 'tail', kind: 'text' }] },
+  'audio': { inputs: [], outputs: [{ id: 'out', kind: 'audio' }, { id: 'analysis', kind: 'text' }] },
   'image': { inputs: [{ id: 'prompt', kind: 'text' }, { id: 'ref', kind: 'image' }], outputs: [{ id: 'out', kind: 'image' }] },
   'video': { inputs: [{ id: 'prompt', kind: 'text' }, { id: 'frame', kind: 'image' }, { id: 'ref', kind: 'image' }], outputs: [{ id: 'out', kind: 'video' }, { id: 'tailpick', kind: 'image' }, { id: 'last', kind: 'image' }] },
-  'finalcut': { inputs: [{ id: 'in', kind: 'video' }], outputs: [] },
+  'finalcut': { inputs: [{ id: 'in', kind: 'video' }, { id: 'music', kind: 'audio' }], outputs: [] },
   'group': { inputs: [], outputs: [] },
 };
 const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop']);
@@ -3059,7 +3081,8 @@ function connectEdge(doc, fromId, toId, fromPort, toPort) {
     // 文本 → 分镜表 script；分镜表 → 分镜表 prev；文本 → 图片/视频 prompt；
     // 图片 → 图片/视频 ref；视频 → 视频 frame 或成片 in。
     if (to.type === 'storyboard') {
-      tp = from.type === 'storyboard' ? 'prev' : ((from.type === 'text' || from.type === 'script') ? 'script' : String((ins[0] && ins[0].id) || ''));
+      if (from.type === 'audio') tp = 'music';
+      else tp = from.type === 'storyboard' ? 'prev' : ((from.type === 'text' || from.type === 'script') ? 'script' : String((ins[0] && ins[0].id) || ''));
     } else if (to.type === 'image') {
       tp = (from.type === 'image' || from.type === 'image-asset' || from.type === 'image-gen') ? 'ref' : 'prompt';
     } else if (to.type === 'video') {
@@ -3067,10 +3090,14 @@ function connectEdge(doc, fromId, toId, fromPort, toPort) {
       else if (from.type === 'image' || from.type === 'image-asset' || from.type === 'image-gen') tp = 'ref';
       else tp = 'prompt';
     } else if (to.type === 'finalcut') {
-      tp = 'in';
+      tp = from.type === 'audio' ? 'music' : 'in';
     } else {
       tp = String((ins[0] && ins[0].id) || '');
     }
+  }
+  if (!fp) {
+    if (from.type === 'audio' && to.type === 'storyboard') fp = 'analysis';
+    else if (from.type === 'audio') fp = 'out';
   }
   if (!fp) {
     const want = ins.find((p) => p.id === tp);
@@ -3323,6 +3350,230 @@ export const inject = ['webServer', 'tools'];
 
 // 仅供诊断 / 自动化测试（不属于 RPC 面，运行时行为不受影响）
 export const _internals = { THUMB_MAX_SIDE, thumbRelOf, isDerivedMedia, updateCheck, updateInstall, npmLatestVersion, cmpVer, findPnpm, NPM_REGISTRIES, pickUpdateRegistry, registryCacheValid, pnpmAddArgs, getProfileDir: () => PROFILE_DIR, getVersion: () => VERSION, dataRoot, setDataRoot, dataRootMigrate, dataRootImport, ensureProjectFolder, physicalRel, mirrorProjectToDataRoot, writeAssetIndex, removeAssetIndexEntry, readDataRootMeta, removeDataRootProject, sqlDeleteProjectRows, deletedProjectIds, addDeletedProjectId, clearDeletedProjectId, fetchProxyForward, storyboardConsistencyWarnings, readAssetIndexNames, safeJoin, mimeOf, pipeFile, getIcConfigPath: () => CONFIG_PATH, canvasCreateProject, canvasWriteNode, canvasConnect, canvasDeleteProject, canvasDeleteNode, canvasRunNode, canvasNodeStatus, canvasGetBible, canvasUpdateBible, canvasCreateNode, canvasOpen, canvasesList, canvasCreate, canvasRename, canvasDelete, canvasDocId, isCanvasDocId, splitCanvasDocId, normalizeCanvasId, canvasRegistry, sanitizeCanvases, wsProjectsScan, isWsProject, wsProjectHome, wsWatchTick, wsProjectCreateAt, projectHomeDir, memoryRead, memoryWrite, bindingsRead, bindingSet, bindingClear, readCanvasDoc, writeCanvasDoc, deleteCanvasDocsForProject, projectsList, projectsPut, projectsGet, projectsDelete, projectsSync, sqliteAvailable: () => !!SQLITE, getDb, closeDb, dbAssetsList, dbAssetsGet, dbAssetNames, dbAssetCreate, dbAssetUpdate, dbAssetDelete, objectAbsFor, ftsReconcile, readDocOrNull, docExists, sqlActive, rpcMethods: () => _rpcMethods, canvasUpdateNode, canvasGenerateNode };
+
+function audioProviderFromConfig(preferRef) {
+  const cfg = readIcConfig();
+  const saved = (cfg && cfg.audioUnderstand) || {};
+  const flat = [];
+  for (const p of (saved.providers || [])) {
+    for (const m of (p.models || [])) {
+      if (!m || !String(m.model || '').trim()) continue;
+      flat.push({
+        ref: p.id + '|' + m.id,
+        baseUrl: p.baseUrl || '',
+        apiKey: p.apiKey || '',
+        extra: p.extra || '',
+        model: String(m.model).trim(),
+      });
+    }
+  }
+  const want = String(preferRef || saved.star || '');
+  return flat.find((x) => x.ref === want) || flat[0] || null;
+}
+/** 数据根里的音频文件。超过 Base64 安全体积则只报告 tooBig，交给画布压成 WAV。 */
+function readAssetAudioBuffer(assetId) {
+  const id = String(assetId || '');
+  if (!id) return null;
+  let rel = '';
+  let mime = '';
+  let duration = 0;
+  if (sqlActive()) {
+    try {
+      const row = getDb().prepare('SELECT rel, mime, duration FROM assets WHERE id = ?').get(id);
+      if (row) { rel = row.rel || ''; mime = row.mime || ''; duration = Number(row.duration) || 0; }
+    } catch { /* 无表或无库 */ }
+  }
+  const root = dataRoot();
+  if (!rel && root) {
+    try {
+      const meta = readDataRootMeta();
+      for (const entry of (meta.projects || [])) {
+        let list = null;
+        try { list = JSON.parse(readFileSync(path.join(root, 'projects', entry.folder, 'assets.json'), 'utf8')); } catch { continue; }
+        const hit = Array.isArray(list) && list.find((a) => a && a.id === id);
+        if (hit) { rel = hit.rel || ''; mime = hit.mime || ''; duration = Number(hit.duration) || 0; break; }
+      }
+    } catch { /* 无索引 */ }
+  }
+  if (!rel || !root) return null;
+  let abs;
+  try { abs = safeJoin(root, physicalRel(rel) || rel).abs; } catch { return null; }
+  let st;
+  try { st = statSync(abs); } catch { return null; }
+  if (!st.isFile()) return null;
+  if (st.size > 7200000) return { tooBig: true, size: st.size, duration };
+  const ext = path.extname(abs).slice(1).toLowerCase();
+  let format = 'mp3';
+  if (/wav/.test(mime) || ext === 'wav') format = 'wav';
+  else if (/aac|mp4/.test(mime) || ext === 'm4a' || ext === 'aac') format = 'aac';
+  else if (ext === 'amr') format = 'amr';
+  else if (ext === 'ogg') format = 'ogg';
+  return { buf: readFileSync(abs), format, duration, mime };
+}
+function findTypedNode(doc, nodeId, type) {
+  if (nodeId) {
+    const n = doc.nodes && doc.nodes[nodeId];
+    if (n && (!type || n.type === type)) return n;
+    return null;
+  }
+  if (!type) return null;
+  const list = Object.values(doc.nodes || {}).filter((n) => n && n.type === type);
+  return list[list.length - 1] || null;
+}
+async function canvasAnalyzeAudio(args) {
+  const id = String((args && args.projectId) || '');
+  const canvasId = toolCanvasId(args);
+  let doc = readToolDoc(args);
+  let node = findTypedNode(doc, args && args.nodeId, 'audio');
+  if (!node) {
+    const created = canvasCreateNode({
+      projectId: id, canvasId, type: 'audio',
+      name: (args && args.name) || '歌曲',
+      assetId: (args && args.assetId) || '',
+    });
+    doc = readToolDoc(args);
+    node = doc.nodes[created.nodeId];
+  } else if (args && args.assetId) {
+    node.data.assetId = String(args.assetId);
+  }
+  if (node.data.analysis && !(args && (args.force === true || args.force === 'true'))) {
+    const digest = analysisDigest(node.data.analysis);
+    return {
+      ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
+      cached: true, analysis: digest, deferred: false,
+      text: '音频节点已有分析（' + (digest.source || '') + (digest.model ? ' · ' + digest.model : '') + '，BPM ' + (digest.bpm == null ? '未知' : digest.bpm) + '）。要重听请传 force:true。做 MV 用 canvas_music_video。',
+    };
+  }
+  const energy = Array.isArray(args && args.energy) && args.energy.length ? args.energy : null;
+  const file = (!energy && node.data.assetId) ? readAssetAudioBuffer(node.data.assetId) : null;
+  if (!node.data.assetId && !energy && !(Number(args && args.durationSec) > 0)) {
+    throw new Error('音频节点还没有歌曲：上传、从资产库放入，或传入 assetId / energy');
+  }
+  if (file && file.tooBig) {
+    await canvasRunNode({ projectId: id, canvasId, nodeId: node.id });
+    return {
+      ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
+      deferred: true, cached: false,
+      text: '歌曲文件超过单次 Base64 上限。已请画布把音频压成单声道 WAV 后再分析（画布页面需要开着）。完成后用 canvas_node_status 读取。',
+    };
+  }
+  const provider = audioProviderFromConfig(node.data.audioModel || node.data.model || '');
+  const localOnly = !provider;
+  const analysis = await understandFromRequest({
+    provider: provider || null,
+    audioBase64: file && file.buf ? file.buf.toString('base64') : '',
+    format: file && file.format,
+    durationSec: Number(args && args.durationSec) || (file && file.duration) || 0,
+    energy: energy || undefined,
+    hopSec: args && args.hopSec,
+  });
+  node.data.analysis = analysis;
+  node.data.status = 'done';
+  node.data.error = null;
+  node.data.aiStatus = 'idle';
+  doc.updatedAt = Date.now();
+  writeToolDoc(args, doc);
+  markDocChanged(id, canvasId);
+  const digest = analysisDigest(analysis);
+  const how = analysis.method === 'model' ? ('模型 ' + (analysis.model || SUGGESTED_MODEL_ID)) : (analysis.method === 'webaudio' ? '本地节拍/能量' : '占位');
+  return {
+    ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
+    cached: false, deferred: false, analysis: digest,
+    text: '已分析「' + ((node.data && node.data.label) || node.id) + '」（' + how + '，BPM ' + (digest.bpm == null ? '未知' : digest.bpm) + '，' + (digest.sections || []).length + ' 段，' + digest.durationSec + 's）。'
+      + (localOnly ? '未配置音频理解供应商，这不是模型在听歌。' : '')
+      + ' 下一步 canvas_music_video。',
+  };
+}
+function canvasMusicVideo(args) {
+  const id = String((args && args.projectId) || '');
+  const canvasId = toolCanvasId(args);
+  let doc = readToolDoc(args);
+  let analysis = args && args.analysis;
+  if (typeof analysis === 'string' && analysis.trim()) {
+    try { analysis = JSON.parse(analysis); } catch { throw new Error('analysis 需要 JSON 对象'); }
+  }
+  let audio = findTypedNode(doc, args && args.nodeId, 'audio');
+  if (!audio) {
+    const created = canvasCreateNode({ projectId: id, canvasId, type: 'audio', name: (args && args.name) || '歌曲' });
+    doc = readToolDoc(args);
+    audio = doc.nodes[created.nodeId];
+  }
+  if (!analysis || typeof analysis !== 'object') analysis = audio.data && audio.data.analysis;
+  if (!analysis || typeof analysis !== 'object') throw new Error('还没有音频分析：先 canvas_analyze_audio，或把 analysis JSON 传进来');
+  audio.data.analysis = analysis;
+  audio.data.status = audio.data.assetId ? 'done' : (audio.data.status || 'idle');
+  const maxClip = Number(args && args.maxClipSeconds) || 15;
+  const plan = planMusicVideoShots(analysis, { maxClipSeconds: maxClip, brief: (args && args.brief) || '' });
+  let sb = (args && args.storyboardNodeId) ? findTypedNode(doc, args.storyboardNodeId, 'storyboard') : null;
+  if (!sb) {
+    const created = canvasCreateNode({ projectId: id, canvasId, type: 'storyboard', name: 'MV 分镜' });
+    doc = readToolDoc(args);
+    audio = doc.nodes[audio.id];
+    sb = doc.nodes[created.nodeId];
+  }
+  sb.data.shots = plan.shots;
+  sb.data.status = 'done';
+  sb.data.aiStatus = 'idle';
+  sb.data.aiError = null;
+  sb.data.segMaxSeconds = plan.maxClipSeconds;
+  sb.data.warnings = [];
+  connectEdge(doc, audio.id, sb.id, 'analysis', 'music');
+  let video = (args && args.videoNodeId) ? findTypedNode(doc, args.videoNodeId, 'video') : null;
+  if (!video) {
+    writeToolDoc(args, doc);
+    const created = canvasCreateNode({ projectId: id, canvasId, type: 'video', name: 'MV 视频', connectFrom: sb.id });
+    doc = readToolDoc(args);
+    audio = doc.nodes[audio.id];
+    sb = doc.nodes[sb.id];
+    video = doc.nodes[created.nodeId];
+  } else if (!(doc.edges || []).some((e) => e.fromNode === sb.id && e.toNode === video.id)) {
+    connectEdge(doc, sb.id, video.id);
+  }
+  let cut = (args && args.finalcutNodeId) ? findTypedNode(doc, args.finalcutNodeId, 'finalcut') : null;
+  if (!cut) {
+    writeToolDoc(args, doc);
+    const created = canvasCreateNode({ projectId: id, canvasId, type: 'finalcut', name: 'MV 成片' });
+    doc = readToolDoc(args);
+    audio = doc.nodes[audio.id];
+    video = doc.nodes[video.id];
+    cut = doc.nodes[created.nodeId];
+  }
+  if (video && !(doc.edges || []).some((e) => e.fromNode === video.id && e.toNode === cut.id && e.toPort === 'in')) {
+    connectEdge(doc, video.id, cut.id, 'out', 'in');
+  }
+  connectEdge(doc, audio.id, cut.id, 'out', 'music');
+  if (audio.data.assetId) cut.data.soundtrackAssetId = audio.data.assetId;
+  cut.data.transition = cut.data.transition || 'none';
+  try {
+    const inv = packInventory(HERE);
+    const allow = allowedIds(inv);
+    const base = normalizeSkillProfile(doc.skillProfile, allow);
+    doc.skillProfile = normalizeSkillProfile({ ...base, form: 'music-video' }, allow);
+    doc.skillUpdatedAt = Date.now();
+  } catch { /* 技能包缺失不阻断分镜 */ }
+  doc.updatedAt = Date.now();
+  writeToolDoc(args, doc);
+  markDocChanged(id, canvasId);
+  const segments = groupShotsForClips(plan.shots, plan.maxClipSeconds);
+  const over = segments.filter((g) => g.duration > plan.maxClipSeconds + 0.05);
+  return {
+    ok: true,
+    projectId: id,
+    ...(canvasId ? { canvasId } : {}),
+    nodeId: audio.id,
+    storyboardNodeId: sb.id,
+    videoNodeId: video ? video.id : '',
+    finalcutNodeId: cut.id,
+    shotCount: plan.shots.length,
+    total: plan.total,
+    segmentCount: segments.length,
+    text: '已按音乐铺 MV：' + plan.shots.length + ' 镜 / ' + plan.total + 's / ' + segments.length + ' 个 ≤' + plan.maxClipSeconds + 's 生成段'
+      + (plan.bpm ? ('，BPM ' + plan.bpm) : '')
+      + '。分镜表「' + ((sb.data && sb.data.label) || sb.id) + '」，视频节点连分镜表，成片的 music 口接原曲。'
+      + (over.length ? ' 有段落超过单次上限，生成时会按切点再拆。' : '')
+      + ' 下一步 canvas_run_node 视频节点，再跑成片。',
+  };
+}
 
 function resolveModel(providers, want) {
   const byProvider = want && want.provider
@@ -3926,7 +4177,61 @@ export function apply(ctx) {
       async memoryPut(args) {
         return memoryWrite(args && args.projectId, args && args.canvasId, args || {});
       },
-      
+      /** 音频理解供应商（两级：供应商 + 模型）。Key 只写进本机 config，不进日志。 */
+      async audioProvidersPut(args) {
+        const cfg = readIcConfig();
+        const providers = Array.isArray(args && args.providers) ? args.providers : [];
+        cfg.audioUnderstand = {
+          providers: providers.map((p) => ({
+            id: String((p && p.id) || ''),
+            name: String((p && p.name) || ''),
+            baseUrl: String((p && p.baseUrl) || ''),
+            apiKey: String((p && p.apiKey) || ''),
+            extra: String((p && p.extra) || ''),
+            models: Array.isArray(p && p.models) ? p.models.map((m) => ({ id: String((m && m.id) || ''), model: String((m && m.model) || '') })) : [],
+          })),
+          star: String((args && args.star) || ''),
+        };
+        writeIcConfig(cfg);
+        return { ok: true, count: cfg.audioUnderstand.providers.length };
+      },
+      async audioProvidersGet() {
+        const cfg = readIcConfig();
+        const saved = (cfg && cfg.audioUnderstand) || { providers: [], star: '' };
+        return {
+          ok: true,
+          star: saved.star || '',
+          suggestedModel: SUGGESTED_MODEL_ID,
+          suggestedModelName: USER_MODEL_NAME,
+          defaultBaseUrl: DEFAULT_BASE_URL,
+          providers: (saved.providers || []).map((p) => ({
+            id: p.id, name: p.name, baseUrl: p.baseUrl, hasKey: !!p.apiKey,
+            models: p.models || [],
+          })),
+        };
+      },
+      /** 画布把压好的 WAV / 能量曲线交到宿主，由宿主去调全模态模型或走本地兜底。 */
+      async audioUnderstand(args) {
+        const analysis = await understandFromRequest(args || {});
+        return { ok: true, analysis };
+      },
+      async audioPlanStoryboard(args) {
+        const a = args && args.analysis;
+        if (!a || typeof a !== 'object') throw new Error('需要 analysis（音频分析 JSON）');
+        const plan = planMusicVideoShots(a, {
+          maxClipSeconds: Number(args && args.maxClipSeconds) || 15,
+          brief: (args && args.brief) || '',
+        });
+        return {
+          ok: true,
+          shots: plan.shots,
+          total: plan.total,
+          maxClipSeconds: plan.maxClipSeconds,
+          bpm: plan.bpm,
+          segments: groupShotsForClips(plan.shots, plan.maxClipSeconds),
+          warnings: plan.warnings || [],
+        };
+      },
     };
 
     const toolDisposers = [];
@@ -4183,6 +4488,18 @@ export function apply(ctx) {
             if (s.chainFrom) lines.push('续帧: ' + (s.chainFrom === 'wired' ? '首帧来自 frame 连线（上一段尾帧）' : '自动取上一段视频的尾帧作首帧'));
             if (s.seam) lines.push('接缝校验: ' + (s.seam.ok ? '通过' : '偏跳') + (s.seam.sim != null ? '（相似度 ' + s.seam.sim + '，阈值 ' + s.seam.thr + '）' : '') + (s.seam.note ? ' — ' + s.seam.note : ''));
             if (s.tailPick && s.tailPickAssetId) lines.push('尾帧最佳选帧: ' + Number(s.tailPick.t || 0).toFixed(2) + 's 处（得分 ' + s.tailPick.score + '）资产 ' + s.tailPickAssetId);
+            if (s.analysis) {
+              const an = s.analysis;
+              const secs = (an.sections || []).map((sec) => (sec.label || '') + ' ' + sec.startSec + '-' + sec.endSec + 's').join(' / ');
+              lines.push('音频分析 ' + (an.schema || '') + ' · ' + (an.source || '') + (an.model ? ' · ' + an.model : '') + (an.method === 'mock' ? ' · 占位' : an.method === 'webaudio' ? ' · 本地节拍' : ''));
+              lines.push('BPM ' + (an.bpm == null ? '未知' : an.bpm) + ' · ' + (an.timeSignature || '') + ' · ' + an.durationSec + 's · 拍点 ' + (an.beatCount || 0));
+              if (secs) lines.push('段落: ' + secs);
+              if (an.mood) lines.push('情绪: ' + an.mood);
+              if (an.summary) lines.push('摘要: ' + an.summary);
+              if ((an.lyrics || []).length) lines.push('歌词: ' + an.lyrics.slice(0, 6).map((l) => l.text).join(' / '));
+              if ((an.imagery || []).length) lines.push('画面: ' + an.imagery.join('；'));
+              (an.warnings || []).forEach((w) => lines.push(' · ' + w));
+            }
             return {
               ok: true, type: s.type, status: s.status, assetId: s.assetId || undefined,
               x: Number(s.x) || 0, y: Number(s.y) || 0, w: Number(s.w) || 0, h: Number(s.h) || 0,
@@ -4194,6 +4511,7 @@ export function apply(ctx) {
               tailPickAssetId: s.tailPickAssetId || undefined,
               historyAssetIds: s.historyAssetIds.length ? s.historyAssetIds : undefined,
               warnings: warnings.length ? warnings : undefined, shots: shots.length ? shots : undefined,
+              analysis: s.analysis || undefined,
               text: lines.join('\n'),
             };
           },
@@ -4532,13 +4850,14 @@ export function apply(ctx) {
         });
         reg({
           name: 'canvas_create_node',
-          description: '在项目画布上新建指定类型的节点（image 图片节点 / video 视频节点 / storyboard 分镜表 / finalcut 成片 / script 剧本 / text 文本）。图片与视频是**合并节点**：有 assetId 就是已有素材（资产），空节点在画布上点开生成面板填写提示词后生成；旧类型名 image-gen / image-asset / video-gen / video-asset 仍可用，会被自动映射为 image / video。【分镜必须用 type:"storyboard" 的分镜表节点，绝不要用剧本节点装分镜】。【工作流铁律】实际生成由节点完成：你只负责写提示词、连线（connectFrom）、canvas_run_node 触发，不要把成稿直接填进 output。分镜表用 connectFrom 连到上游剧本节点（内容来自连线，不要复制剧本全文）；image/video 没有上游提示词时才在 prompt 里写内容，有上游时靠连线取。',
+          description: '在项目画布上新建指定类型的节点（image 图片节点 / video 视频节点 / storyboard 分镜表 / finalcut 成片 / script 剧本 / text 文本 / audio 音频）。图片与视频是**合并节点**：有 assetId 就是已有素材（资产），空节点在画布上点开生成面板填写提示词后生成；旧类型名 image-gen / image-asset / video-gen / video-asset 仍可用，会被自动映射为 image / video。audio 用来放一首歌（上传或 assetId），分析走 canvas_analyze_audio，不要把歌塞进文本节点。【分镜必须用 type:"storyboard" 的分镜表节点，绝不要用剧本节点装分镜】。【工作流铁律】实际生成由节点完成：你只负责写提示词、连线（connectFrom）、canvas_run_node 触发，不要把成稿直接填进 output。分镜表用 connectFrom 连到上游剧本节点（内容来自连线，不要复制剧本全文）；image/video 没有上游提示词时才在 prompt 里写内容，有上游时靠连线取。',
           parameters: {
             type: 'object',
             properties: {
               projectId: { type: 'string', description: '项目 id' },
               canvasId: { type: 'string', description: '可选：画布 id（项目下的子画布；缺省 = 项目默认画布）' },
-              type: { type: 'string', enum: ['script', 'text', 'image', 'video', 'storyboard', 'finalcut', 'image-gen', 'image-asset', 'video-gen', 'video-asset'], description: '节点类型（image/video 为合并类型；旧名 image-gen 等仍接受并自动映射）' },
+              type: { type: 'string', enum: ['script', 'text', 'image', 'video', 'storyboard', 'finalcut', 'audio', 'image-gen', 'image-asset', 'video-gen', 'video-asset'], description: '节点类型（image/video 为合并类型；audio 为歌曲；旧名 image-gen 等仍接受并自动映射）' },
+              assetId: { type: 'string', description: '可选：音频节点要绑定的已有音频资产 id' },
               name: { type: 'string', description: '节点名字（建议填写，如"角色-陈拾 参考图"）' },
               prompt: { type: 'string', description: '提示词（图片/视频用画面提示词；剧本用创作意图；文本用正文）' },
               size: { type: 'string', description: '可选：图片清晰度 1K/2K/4K' },
@@ -4602,6 +4921,57 @@ export function apply(ctx) {
           async execute(args) {
             const r = await canvasOpen(args);
             return { ok: true, projectId: r.projectId || undefined, text: r.projectId ? ('✅ 画布即将打开并跳到项目 ' + r.projectId + '。') : '✅ 画布即将打开。' };
+          },
+        });
+        reg({
+          name: 'canvas_analyze_audio',
+          description: '用音频理解模型听一首歌，把结构化结果写进音频节点。MV 必须先分析再分镜。歌曲来自音频节点上的 assetId，或参数 assetId；没有节点会新建一个 audio 节点。已配置「音频理解」供应商时走全模态模型（官方 id 建议 qwen3.8-omni-flash，即 Qwen3.8-Omni-Flash；OpenAI 兼容 Chat Completions，stream 由宿主强制打开，Key 留在本机）。没配置供应商时用本地节拍/能量或标明的占位分析，不要假装模型听过。返回 BPM、段落、情绪、歌词与画面建议的摘要；完整 JSON 在节点上，用 canvas_node_status 读。force:true 重听。文件大于 Base64 上限时改为请画布压缩后再分析。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              canvasId: { type: 'string', description: '可选：画布 id' },
+              nodeId: { type: 'string', description: '可选：音频节点 id。缺省则用画布上已有音频节点，没有就新建' },
+              assetId: { type: 'string', description: '可选：要分析的音频资产 id' },
+              name: { type: 'string', description: '可选：新建音频节点的名字' },
+              force: { type: 'boolean', description: '可选：true = 忽略已有分析，重新听' },
+              durationSec: { type: 'number', description: '可选：已知时长（秒）。没有文件时用于占位分析' },
+              hopSec: { type: 'number', description: '可选：能量曲线每点的秒数，默认 0.25' },
+              energy: { type: 'array', items: { type: 'number' }, description: '可选：0到1 的能量曲线。无模型时用它做本地节拍分析' },
+            },
+            required: ['projectId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 180000,
+          async execute(args) {
+            return canvasAnalyzeAudio(args || {});
+          },
+        });
+        reg({
+          name: 'canvas_music_video',
+          description: '用音频分析生成音乐 MV 分镜，并接到现有的视频 / 成片流水线。镜头时长对齐歌曲段落和拍点；切点落在 scene_change / closeup，方便按 ≤15 秒一段生成，段与段用尾帧接力。会写入（或新建）分镜表、连一个视频节点、连成片，并把音频节点的 out 接到成片的 music 口当原曲声轨。同时把项目规格设为 music-video。分析从音频节点读取；也可以直接传 analysis JSON。不要手写一套与节拍无关的秒数。',
+          parameters: {
+            type: 'object',
+            properties: {
+              projectId: { type: 'string', description: '项目 id' },
+              canvasId: { type: 'string', description: '可选：画布 id' },
+              nodeId: { type: 'string', description: '可选：音频节点 id' },
+              storyboardNodeId: { type: 'string', description: '可选：要写入的分镜表。缺省新建' },
+              videoNodeId: { type: 'string', description: '可选：要连接的视频节点。缺省新建并连到分镜表' },
+              finalcutNodeId: { type: 'string', description: '可选：成片节点。缺省新建' },
+              name: { type: 'string', description: '可选：新建音频节点时的名字' },
+              brief: { type: 'string', description: '可选：画面方向，写进每镜，不改变切点' },
+              maxClipSeconds: { type: 'number', description: '可选：单次视频生成上限，默认 15，最大 15' },
+              analysis: { type: 'object', description: '可选：已有的音频分析 JSON。缺省读音频节点' },
+            },
+            required: ['projectId'],
+            additionalProperties: false,
+          },
+          output: textOutput,
+          timeoutMs: 60000,
+          async execute(args) {
+            return canvasMusicVideo(args || {});
           },
         });
         // ── 技能包：把「本插件有哪些技能、各管什么」和「当前该按什么口径写提示词」交给对话侧 ──
@@ -4842,6 +5212,40 @@ export function apply(ctx) {
             res.statusCode = timedOut ? 504 : 502;
             res.setHeader('content-type', 'application/json; charset=utf-8');
             res.end(JSON.stringify({ error: (timedOut ? '图片接口代理超时：' : '图片接口代理请求失败：') + String((e && e.message) || e) }));
+          }
+        },
+      }),
+      // 音频理解：画布把压好的 WAV（Base64）或能量曲线交到宿主，由宿主调全模态模型。
+      // 不走 /api/rpc（8MB 上限盖不住一首歌），上限 14MB，仍低于代理 16MB，并卡在 DashScope 的 10MB Base64 限制内。
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `/${NAME}/api/audio-understand`,
+        async handler(req, res) {
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          try {
+            if (req.method !== 'POST') {
+              res.statusCode = 405;
+              res.end(JSON.stringify({ error: '仅接受 POST' }));
+              return;
+            }
+            const chunks = [];
+            let size = 0;
+            for await (const c of req) {
+              size += c.length;
+              if (size > 14e6) {
+                res.statusCode = 413;
+                res.end(JSON.stringify({ error: '音频请求过大（上限 14MB）。请先压成单声道 WAV。' }));
+                return;
+              }
+              chunks.push(c);
+            }
+            let payload = {};
+            try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { payload = {}; }
+            const analysis = await understandFromRequest(payload);
+            res.end(JSON.stringify({ ok: true, analysis }));
+          } catch (e) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: String((e && e.message) || e) }));
           }
         },
       }),

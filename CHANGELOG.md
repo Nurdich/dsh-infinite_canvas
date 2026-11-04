@@ -6,6 +6,18 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 
 ## [Unreleased]
 
+### Added
+- **Audio-driven music videos.** An audio node holds a song (upload, asset library, or `canvas_create_node type:audio`). An audio-understanding provider — same two-level provider + model settings as image/video, ★ default — calls an OpenAI-compatible chat endpoint with `input_audio` (DashScope / Bailian `compatible-mode/v1`). The suggested model id is `qwen3.8-omni-flash` (the official id for the name Qwen3.8-Omni-Flash). The host process sends the request and forces `stream: true`. The result is JSON (`dshic.audio-analysis.v1`: BPM, beats, sections, energy, genre, lyrics, imagery). `canvas_analyze_audio` writes it; `canvas_music_video` builds a storyboard cut to those sections and beats, within the existing ≤15s clip planner and tail-frame chain, and wires the song into the final cut. The media-studio persona and director-workshop skill tell the agent to analyze the song before drafting an MV.
+
+### Fixed
+- **Audio assets can be placed on the canvas.** Import and batch-add used to skip every audio file. They now become audio nodes.
+
+### Changed
+- **Icon rail order** inserts 音频 between 视频 and 成片. UI rule 12 and the panel-layout gate match the new order.
+
+### Internal
+- **`audio-drive.js` plus `scripts/test-audio-drive.mjs`.** Request shape, SSE parse, local beat fallback, storyboard alignment against `planShotSegments`, and the two canvas tools. No release version bump.
+
 ## [0.19.21] — 2026-11-03
 
 ### Added

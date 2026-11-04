@@ -64,6 +64,7 @@ const SUITE = [
   // --- 核心链路（历史事故区）---
   { name: 'test-compose.mjs', desc: '成片合成主循环（dur is not defined 事故的网兜）' },
   { name: 'test-tools.mjs', desc: '对话工具 schema 与返回值契约' },
+  { name: 'test-audio-drive.mjs', desc: '音频驱动 MV：Omni 请求 / 本地节拍 / 按拍分镜 / 成片声轨工具' },
   { name: 'test-skill-inject.mjs', desc: '内置专家人设硬规则 / 技能注入 Harness / 技能快捷键契约' },
   { name: 'test-mentions.mjs', desc: '@引用解析（设定集匹配 / [图N] 绑定 / 资产设定图提示词）' },
   { name: 'test-ref-ownership.mjs', desc: '参考图严格=连线 / 绑定弹窗分页拉全 / 设定文字注入视频提示词' },

@@ -12,6 +12,8 @@ Infinite Canvas is a [DeepSeek Harness](https://github.com/deepseek-ai) plugin t
 
 Everything runs locally in your Harness. Bring your own generation APIs, or use the built-in demo mode to learn the whole flow with zero configuration.
 
+Music videos: put a song on an audio node. An omni model (`qwen3.8-omni-flash`, the official id for Qwen3.8-Omni-Flash) returns BPM, sections, beats and imagery; the storyboard is cut to that structure and the original song is the final-cut soundtrack. With no provider, a labeled local beat analysis keeps the pipeline runnable offline.
+
 ## Drive it from the chat
 
 The canvas and the agent share one brain. Every node is an AI workbench, and the **chat side is the director**: ask in plain language and the agent operates the canvas tools for you — batch work especially.

@@ -50,7 +50,9 @@ if (mUnrel) {
 // 发版后 Unreleased 会被清空、内容迁到最新已发布段：覆盖校验必须能回落到该段，
 // 否则"发版提交"本身会把门禁打红（0.19.0 发版时坐实）。
 function coverageTextOf(unrel, released) {
-  return /^\s*-\s+\S/m.test(unrel) ? unrel : released;
+  // 已发布段始终留在检索范围里。Unreleased 一旦写了新条目，不能把上一版已经记下的关键词拿掉，
+  // 否则发版后的第一笔功能记录会让历史清单全部假红。新条目仍然必须写在 Unreleased。
+  return String(unrel || '') + '\n' + String(released || '');
 }
 let releaseSection = '';
 if (firstReleased) {
