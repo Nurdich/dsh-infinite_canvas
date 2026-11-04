@@ -91,7 +91,7 @@ if (!types.size) add(problems, '未能解析 TYPE_LABEL（节点类型清单）'
 const runStart = client.indexOf('async function runGenNode');
 const runBlock = client.slice(runStart, client.indexOf('function commitGenResult', runStart));
 // 图片/视频已合并为 image / video 两种可运行节点（旧 image-gen/image-asset/video-gen/video-asset 在文档入口归一）
-const RUNNABLE = ['script', 'storyboard', 'finalcut', 'image', 'video'];
+const RUNNABLE = ['script', 'storyboard', 'finalcut', 'image', 'video', 'audio'];
 for (const t of types) {
   if (RUNNABLE.includes(t)) {
     if (!runBlock.includes(`'${t}'`)) add(problems, `可运行节点类型 '${t}' 在 runGenNode 中没有分支`);

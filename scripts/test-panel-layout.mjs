@@ -228,7 +228,7 @@ function cssRulesMatchingClass(name) {
   const acts = els.filter((e) => e.props && e.props['data-action']).map((e) => e.props['data-action']);
   // 导演台（open-director）放在动作分区：它和"运行工作流"一样是工具，不是节点类型
   // 记忆查看器（open-memory，0.20.x 会话绑定/项目记忆）：跟在设定集之后，属「项目资料」分组
-  eq(acts.join(','), 'add-text,add-script,add-storyboard,add-image,add-video,add-finalcut,open-assets,open-bible,open-memory,open-director,run-workflow',
+  eq(acts.join(','), 'add-text,add-script,add-storyboard,add-image,add-video,add-audio,add-finalcut,open-assets,open-bible,open-memory,open-director,run-workflow',
     '左侧图标列顺序/动作不符合要求');
   ok(/\.dshic-rail\{[^}]*position:absolute/.test((LAYOUT.CSS || '')), '图标列不再是绝对定位悬浮层');
   // 第 2 条：图标列整列垂直居中（内层绝对定位居中，不是贴左上角/撑满整列）
@@ -312,7 +312,7 @@ function cssRulesMatchingClass(name) {
     ok(/value: normCat\(a\.category\)/.test(src), '资产卡片分类下拉未走归一（image 资产下拉会显示错位）');
   }
   // 统一导入：单按钮按文件类型分流（图片/视频/文本 .txt/.md）
-  ok(/accept: 'image\/\*,video\/\*,\.txt,\.md/.test(assetsBody), '导入按钮未接受文本文件');
+  ok(/accept: 'image\/\*,video\/\*,audio\/\*,\.mp3,\.wav,\.m4a,\.aac,\.ogg,\.txt,\.md/.test(assetsBody), '导入按钮未接受图片/视频/音频/文本');
   ok(/\.\(txt\|md\|markdown\)\$\/i\.test\(f\.name\)/.test(assetsBody), '导入分流缺文本扩展名识别');
   ok(/category: 'script', source: 'upload'/.test(assetsBody), '导入的文本资产未按剧本分类入库');
   // 卡片结构：缩略图/首帧 + 名称 + 分类 + 时间（AssetCard 复用）

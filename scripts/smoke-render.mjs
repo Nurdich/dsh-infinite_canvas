@@ -272,6 +272,7 @@ if (windowStub.__DSH_IC_NODES__) {
     MediaNodeBody: base,
     GenComposer: base,
     FinalCutNodeBody: { ...base, type: 'finalcut', data: { label: 'fc', status: 'idle', subs: {}, keepAudio: true } },
+    AudioNodeBody: { ...base, type: 'audio', data: { label: 'song', status: 'idle', assetId: null, analysis: null } },
     TextNodeBody: { ...base, type: 'text', data: { label: 't', text: '文本内容' } },
     ShotNodeBody: { ...base, type: 'shot', data: { label: 'shot', visual: 'v', motion: 'm' } },
   };
@@ -282,7 +283,7 @@ if (windowStub.__DSH_IC_NODES__) {
   // 生成面板：每种节点类型各渲染一次（图片/视频/分镜/剧本/文本/成片 的控件组合完全不同）
   const GC = windowStub.__DSH_IC_NODES__.GenComposer;
   if (GC) {
-    for (const kind of ['image', 'video', 'storyboard', 'script', 'text', 'finalcut']) {
+    for (const kind of ['image', 'video', 'storyboard', 'script', 'text', 'finalcut', 'audio']) {
       const nn = {
         ...base, id: 'n_smoke_' + kind, type: kind,
         data: kind === 'finalcut'

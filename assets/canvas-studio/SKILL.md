@@ -156,6 +156,19 @@ description: 用无限画布（Infinite Canvas）做短剧/视频创作时使用
       **不回写 = 下一集重复创作、重复设定、丢伏笔**；用户在画布「记忆」页签能看到全部记忆，
       写得是否清楚直接暴露在那里。
 
+## 一点五、音乐 MV（音频驱动）
+
+用户要「给这首歌做 MV / 音乐视频」时，不要先写一套与节拍无关的秒数。
+
+1. 规格：`canvas_skill_pack({ projectId, form: 'music-video', set: true, kind: 'storyboard' })`。
+2. 歌曲放上画布：已有音频资产就 `canvas_create_node({ type: 'audio', assetId })`，或让用户在音频节点上传。
+3. `canvas_analyze_audio`：全模态模型听歌（设置里的音频理解供应商；官方模型 id `qwen3.8-omni-flash`，即 Qwen3.8-Omni-Flash）。没配供应商时返回本地节拍或占位，向用户说明，不要假装模型听过。
+4. `canvas_node_status` 读分析摘要（BPM、段落、歌词、画面建议）。
+5. `canvas_music_video`：按段落和拍点写入分镜，接上视频节点，并把音频 `out` 接到成片 `music` 当原曲声轨。单次视频生成仍 ≤15 秒，段与段尾帧接首帧，沿用现有视频节点，不要按镜再建一串视频节点。
+6. 然后才 `canvas_run_node` 视频，再跑成片。
+
+连线：音频 `fromPort: 'analysis'` → 分镜表 `toPort: 'music'`；音频 `fromPort: 'out'` → 成片 `toPort: 'music'`。
+
 ## 二、标准工作流（对话填提示词+连线+触发，生成由节点完成）
 
 0. **读/补设定集**：`canvas_get_bible` → 缺什么用 `canvas_update_bible` 补。

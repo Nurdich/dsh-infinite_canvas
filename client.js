@@ -67,8 +67,14 @@ function revealCanvasInRight() {
       'script': { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
       'storyboard': {
         // 承接端口（按数组顺序自上而下排布）：顶部「衔接上一镜」← 上一个分镜表的「尾镜」输出
-        inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }],
+        // music：音频节点的分析文本（MV 分镜按拍点铺，而不是按剧本文本）
+        inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }, { id: 'music', kind: 'text' }],
         outputs: [{ id: 'out', kind: 'text' }, { id: 'tail', kind: 'text' }],
+      },
+      'audio': {
+        // out = 原曲（成片声轨）；analysis = 结构化听歌结果（给分镜表）
+        inputs: [],
+        outputs: [{ id: 'out', kind: 'audio' }, { id: 'analysis', kind: 'text' }],
       },
       'image': {
         // 合并类型：旧的「图片生成」与「图片资产」两种节点归一到这里。
@@ -82,7 +88,7 @@ function revealCanvasInRight() {
         // last = 真·最后一帧（画面结尾）；tailpick = 续帧接力的最佳选帧（动作进行中/清晰/不抖）
         outputs: [{ id: 'out', kind: 'video' }, { id: 'tailpick', kind: 'image' }, { id: 'last', kind: 'image' }],
       },
-      'finalcut': { inputs: [{ id: 'in', kind: 'video' }], outputs: [] },
+      'finalcut': { inputs: [{ id: 'in', kind: 'video' }, { id: 'music', kind: 'audio' }], outputs: [] },
       'group': { inputs: [], outputs: [] },
     };
     // 旧节点类型 → 合并类型。旧项目文档在读入时统一归一（loadGraphDoc / mergeHostDoc / importHostProject），
@@ -112,7 +118,7 @@ function revealCanvasInRight() {
     const isVideoLike = (n) => !!n && (n.type === 'video' || n.type === 'video-gen' || n.type === 'video-asset');
     const isImageLike = (n) => !!n && (n.type === 'image' || n.type === 'image-gen' || n.type === 'image-asset');
     // 有生成面板的节点类型（点击节点弹出 GenComposer）
-    const COMPOSER_TYPES = new Set(['text', 'script', 'storyboard', 'image', 'video', 'finalcut']);
+    const COMPOSER_TYPES = new Set(['text', 'script', 'storyboard', 'image', 'video', 'finalcut', 'audio']);
     /** 画面比例 → **预览区**尺寸：短边固定 360，长边按比例放大；长边超过 800 则整体缩到 800。
      *  【注意】这里不含标题栏/操作栏——节点外框用 nodeSizeForRatio()，别再拿这个当节点 w/h。 */
     function sizeForRatio(ratio) {
@@ -1139,6 +1145,24 @@ function revealCanvasInRight() {
       'regen': '重新生成',
       'addMenuHint': '双击空白处或右键也可添加节点',
       'nFinalCut': '成片',
+      'nAudio': '音频',
+      'tagAudio': '音频',
+      'audioApisLabel': '音频理解',
+      'defaultAudioCfg': '音频理解',
+      'audioProviderHint': '全模态听歌。官方模型 id 是 qwen3.8-omni-flash（也就是 Qwen3.8-Omni-Flash）。北京预填 https://dashscope.aliyuncs.com/compatible-mode/v1 ；国际站或工作空间端点按控制台粘贴。请求由宿主发出，stream 强制打开。不填供应商时用本地节拍分析。',
+      'audioModelPh': 'qwen3.8-omni-flash',
+      'audioUpload': '上传歌曲',
+      'audioAnalyze': '分析',
+      'audioAnalyzing': '分析中',
+      'audioNeedFile': '先放入一首歌',
+      'audioNeedAnalysis': '先分析音频节点',
+      'audioAnalyzeFail': '音频分析失败',
+      'audioLocal': '本地节拍',
+      'audioModel': '模型',
+      'audioMock': '占位',
+      'composerAudio': '听完整首歌，抽出节奏、段落和画面',
+      'audioSoundtrackDrift': '成片使用了原曲声轨。转场不是「无」时，声画可能慢慢错位',
+      'close': '关闭',
       'segmentsLabel': '片段列表（按来源节点上下位置排序）',
       'compose': '合成导出',
       'composing': '合成中',
@@ -2103,6 +2127,24 @@ function revealCanvasInRight() {
       'regen': 'Regenerate',
       'addMenuHint': 'Double-click empty space or right-click to add nodes',
       'nFinalCut': 'Final Cut',
+      'nAudio': 'Audio',
+      'tagAudio': 'Audio',
+      'audioApisLabel': 'Audio understanding',
+      'defaultAudioCfg': 'Audio understanding',
+      'audioProviderHint': 'Omni-modal listening. Official model id is qwen3.8-omni-flash (the name Qwen3.8-Omni-Flash). Beijing default is https://dashscope.aliyuncs.com/compatible-mode/v1 ; paste an intl or workspace endpoint from the console. The host sends the request and forces stream. With no provider, a local beat analysis is used.',
+      'audioModelPh': 'qwen3.8-omni-flash',
+      'audioUpload': 'Upload song',
+      'audioAnalyze': 'Analyze',
+      'audioAnalyzing': 'Analyzing',
+      'audioNeedFile': 'Add a song first',
+      'audioNeedAnalysis': 'Analyze the audio node first',
+      'audioAnalyzeFail': 'Audio analysis failed',
+      'audioLocal': 'Local beats',
+      'audioModel': 'Model',
+      'audioMock': 'Placeholder',
+      'composerAudio': 'Listen to the whole song and pull rhythm, sections, and images',
+      'audioSoundtrackDrift': 'The final cut uses the song as soundtrack. A transition other than none can drift from the picture',
+      'close': 'Close',
       'segmentsLabel': 'Segments (ordered by source node position)',
       'compose': 'Compose & export',
       'composing': 'Composing',
@@ -2855,6 +2897,8 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-edge.kind-text{stroke:var(--dsw-alias-label-secondary);}
 .dshic-edge.kind-image{stroke:var(--dsw-alias-brand-primary);}
 .dshic-edge.kind-video{stroke:var(--dsw-alias-state-success-primary);}
+.dshic-edge.kind-audio{stroke:var(--dsw-alias-state-warn-primary);}
+.dshic-audio{width:100%;height:36px;display:block;}
 .dshic-edge.is-selected{stroke-width:3.5;filter:drop-shadow(0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 60%,transparent));}
 /* 选中节点的连线高亮：亮绿 + 双层外发光（固定高对比色，选中态不随主题变化） */
 .dshic-edge.is-node-linked{stroke:#2fe08a;stroke-width:2.6;filter:drop-shadow(0 0 3px rgba(47,224,138,.95)) drop-shadow(0 0 9px rgba(47,224,138,.5));}
@@ -3540,8 +3584,11 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       // 供应商 + 模型两级：一个供应商（URL/Key）配一次，下面挂多个模型；★星标模型 = 节点未指定时的默认路由
       imageProviders: [],  // [{id, name, baseUrl, apiKey, extra, size?, responseFormat?, mode?, models: [{id, model}]}]
       videoProviders: [],  // [{id, name, url, apiKey, extra, outputFormat?, generateAudio?, protocol?, watermark?, models: [{id, model}]}]
+      // 音频理解（全模态）：OpenAI 兼容 Chat Completions + input_audio。★ 默认模型。
+      audioProviders: [],  // [{id, name, baseUrl, apiKey, extra, models: [{id, model}]}]
       imageStar: '',       // 'providerId|modelId'
       videoStar: '',
+      audioStar: '',
       ttsApis: [],     // [{id, name, baseUrl, apiKey, model, voice}]
       ttsApiId: '',
       lang: '',        // '' = 跟随 Harness
@@ -3552,8 +3599,10 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
         textLlm: { provider: (s.textLlm && s.textLlm.provider) || '', model: (s.textLlm && s.textLlm.model) || '' },
         imageProviders: Array.isArray(s.imageProviders) ? s.imageProviders : [],
         videoProviders: Array.isArray(s.videoProviders) ? s.videoProviders : [],
+        audioProviders: Array.isArray(s.audioProviders) ? s.audioProviders : [],
         imageStar: s.imageStar || '',
         videoStar: s.videoStar || '',
+        audioStar: s.audioStar || '',
         ttsApis: Array.isArray(s.ttsApis) ? s.ttsApis : [],
         ttsApiId: s.ttsApiId || '',
         lang: s.lang || '',
@@ -3607,6 +3656,10 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
     function saveSettings(s) {
       lsSet(LS_SETTINGS, s);
       notify(); // 设置即改即存（无保存按钮），但必须通知画布重渲染——否则节点上的模型下拉/星标一直是旧快照
+      // 音频理解的 Key 同步到宿主配置（仍在本机），对话工具才能在宿主进程里调模型
+      if (s && Array.isArray(s.audioProviders)) {
+        hostRpc('audioProvidersPut', { providers: s.audioProviders, star: s.audioStar || '' }).catch(() => {});
+      }
     }
 
     // ---------- 供应商 + 模型（图片/视频）：扁平视图与解析 ----------
@@ -3643,6 +3696,21 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
     function resolveVideoModelCfg(settings, ref) {
       const list = flattenVideoModels(settings);
       const use = String(ref || '').trim() || settings.videoStar || '';
+      return list.find((x) => x.ref === use) || null;
+    }
+    function flattenAudioModels(settings) {
+      const out = [];
+      for (const p of settings.audioProviders || []) {
+        for (const m of (p.models || [])) {
+          if (!m || !m.id || !String(m.model || '').trim()) continue;
+          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '' });
+        }
+      }
+      return out;
+    }
+    function resolveAudioModelCfg(settings, ref) {
+      const list = flattenAudioModels(settings);
+      const use = String(ref || '').trim() || settings.audioStar || '';
       return list.find((x) => x.ref === use) || null;
     }
     /** 节点上的模型引用（兼容旧扁平 apiId 的懒迁移）。 */
@@ -7492,6 +7560,64 @@ function queueThumb(assetId) {
       }
       return new Blob([data], { type: 'audio/wav' });
     }
+    /** 把时长压进 Base64 预算：优先 16kHz 单声道 16-bit，不够再降到 8kHz，仍不够就截断前段。
+     *  与 audio-drive.js 的 pcmBudget 保持同一函数体（测试会比对）。 */
+    function pcmBudget(durationSec) {
+      const dur = Math.max(0, Number(durationSec) || 0);
+      const rawBudget = Math.floor((9500000 * 3) / 4) - 4096;
+      let sampleRate = 16000;
+      if (dur * sampleRate * 2 > rawBudget) sampleRate = 8000;
+      let sendSec = dur;
+      let truncated = false;
+      if (dur * sampleRate * 2 > rawBudget) {
+        sendSec = Math.floor(rawBudget / (sampleRate * 2));
+        truncated = sendSec + 0.05 < dur;
+      }
+      return { sampleRate, sendSec: Math.max(0, sendSec), truncated, rawBudget };
+    }
+    function downsampleMono(audioBuffer, targetRate, sendSec) {
+      const sr = audioBuffer.sampleRate;
+      const ch = audioBuffer.numberOfChannels || 1;
+      const full = audioBuffer.length;
+      const keep = Math.max(1, Math.min(full, Math.floor((sendSec > 0 ? sendSec : full / sr) * sr)));
+      const mono = new Float32Array(keep);
+      for (let c = 0; c < ch; c++) {
+        const data = audioBuffer.getChannelData(c);
+        for (let i = 0; i < keep; i++) mono[i] += data[i] / ch;
+      }
+      const rate = targetRate > 0 && targetRate < sr - 1 ? targetRate : sr;
+      if (rate === sr) return { samples: mono, sampleRate: sr };
+      const ratio = sr / rate;
+      const outLen = Math.max(1, Math.floor(keep / ratio));
+      const out = new Float32Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const s0 = Math.floor(i * ratio);
+        const s1 = Math.min(keep, Math.floor((i + 1) * ratio));
+        let acc = 0;
+        let n = 0;
+        for (let j = s0; j < s1; j++) { acc += mono[j]; n++; }
+        out[i] = n ? acc / n : 0;
+      }
+      return { samples: out, sampleRate: rate };
+    }
+    function rmsEnergy(audioBuffer, hopSec) {
+      const hop = Math.max(0.05, Number(hopSec) || 0.25);
+      const sr = audioBuffer.sampleRate;
+      const step = Math.max(1, Math.floor(sr * hop));
+      const ch = audioBuffer.numberOfChannels || 1;
+      const out = [];
+      for (let i = 0; i < audioBuffer.length && out.length < 512; i += step) {
+        let acc = 0;
+        let n = 0;
+        const end = Math.min(audioBuffer.length, i + step);
+        for (let c = 0; c < ch; c++) {
+          const data = audioBuffer.getChannelData(c);
+          for (let j = i; j < end; j++) { const v = data[j]; acc += v * v; n++; }
+        }
+        out.push(n ? Math.sqrt(acc / n) : 0);
+      }
+      return { energy: out, hopSec: hop };
+    }
     /** 解码媒体音轨并按绝对秒区间取 PCM 拼接（多段合成一条）→ WAV Blob。 */
     async function extractWavRanges(mediaBlob, rangesSec) {
       const ac = new (window.AudioContext || window.webkitAudioContext)();
@@ -7947,6 +8073,19 @@ function queueThumb(assetId) {
         stream.addTrack(dest.stream.getAudioTracks()[0]);
         audio = { ac, dest };
       } catch { audio = null; }
+      // 原曲声轨：整段成片从 0 播一首歌，片段自带音轨让位（MV 不能让生成视频的声音盖过歌）
+      let bed = null;
+      if (opts.soundtrackUrl && audio) {
+        try {
+          const el = new Audio(opts.soundtrackUrl);
+          const sn = audio.ac.createMediaElementSource(el);
+          sn.connect(audio.dest);
+          bed = { el, sn };
+          try { el.currentTime = 0; } catch { /* 忽略 */ }
+          const p = el.play();
+          if (p && p.catch) p.catch(() => { /* 由看门狗兜底 */ });
+        } catch { bed = null; }
+      }
       const rec = new MediaRecorder(stream, {
         mimeType: mime,
         // 码率：仅在用户显式选择时指定，否则交给浏览器/编码器默认（不在代码里写死）
@@ -7961,7 +8100,7 @@ function queueThumb(assetId) {
         item.started = true;
         item.startAt = performance.now();
         const v = item.v;
-        const wantAudio = !!audio && opts.keepAudio !== false && item.withAudio;
+        const wantAudio = !!audio && opts.keepAudio !== false && item.withAudio && !opts.soundtrackUrl;
         if (wantAudio) {
           v.muted = false; v.volume = 1;
           try { item.srcNode = audio.ac.createMediaElementSource(v); item.srcNode.connect(audio.dest); } catch { item.srcNode = null; }
@@ -8010,6 +8149,10 @@ function queueThumb(assetId) {
           if (done) return;
           done = true;
           failed = err || null;
+          if (bed) {
+            try { bed.el.pause(); } catch { /* 忽略 */ }
+            try { bed.sn.disconnect(); } catch { /* 忽略 */ }
+          }
           resolve();
         }
         function frame() {
@@ -9817,6 +9960,9 @@ function queueThumb(assetId) {
         data.status = 'idle'; data.error = null; data.progress = null; data.assetId = null;
         data.subs = {}; data.keepAudio = true;
       }
+      if (type === 'audio') {
+        data.assetId = null; data.analysis = null; data.audioModel = ''; data.status = 'idle';
+      }
       if (type === 'group') {
         data.members = []; data.collapsed = false; data.hidden = false;
         data.label = T('group');
@@ -10083,6 +10229,7 @@ function queueThumb(assetId) {
       if (!n) return 'text';
       if (n.type === 'image') return 'image';
       if (n.type === 'video' || n.type === 'finalcut') return 'video';
+      if (n.type === 'audio') return 'audio';
       return 'text';
     }
     /** 端口单点后的自动选口：左边一个点 / 右边一个点，具体连到内部哪个语义端口由系统按上游类型判定。
@@ -10107,8 +10254,9 @@ function queueThumb(assetId) {
       };
       let ip = null;
       if (toNode.type === 'storyboard') {
-        // 文本/剧本 → 剧本来源；分镜表 → 承接上一镜（prev）
-        ip = fromNode.type === 'storyboard' ? pickIn('text', 'prev') : pickIn('text', 'script');
+        // 文本/剧本 → 剧本来源；分镜表 → 承接上一镜（prev）；音频 → 分析文本
+        if (fromNode.type === 'audio') ip = pickIn('text', 'music');
+        else ip = fromNode.type === 'storyboard' ? pickIn('text', 'prev') : pickIn('text', 'script');
       } else if (toNode.type === 'image') {
         ip = fromKind === 'text' ? pickIn('text', 'prompt') : (isImageLike(fromNode) ? pickIn('image', 'ref') : null);
       } else if (toNode.type === 'video') {
@@ -10116,7 +10264,8 @@ function queueThumb(assetId) {
         else if (isImageLike(fromNode)) ip = pickIn('image', 'ref');
         else if (isVideoLike(fromNode)) ip = pickIn('image', 'frame');
       } else if (toNode.type === 'finalcut') {
-        ip = isVideoLike(fromNode) ? pickIn('video', 'in') : null;
+        if (fromNode.type === 'audio') ip = pickIn('audio', 'music');
+        else ip = isVideoLike(fromNode) ? pickIn('video', 'in') : null;
       } else if (toNode.type === 'shot') {
         ip = pickIn(fromKind);
       }
@@ -10130,6 +10279,8 @@ function queueThumb(assetId) {
         // 视频 → 视频的 frame：优先最佳选帧（动作进行中/清晰），退到真·最后帧
         op = candidates.find((p) => p.id === 'tailpick' && fromNode.data && fromNode.data.lastPickAssetId) || candidates.find((p) => p.id === 'last');
       }
+      if (!op && fromNode.type === 'audio' && ip && ip.kind === 'text') op = candidates.find((p) => p.id === 'analysis');
+      if (!op && fromNode.type === 'audio') op = candidates.find((p) => p.id === 'out');
       if (!op && fromNode.type === 'shot') op = candidates.find((p) => p.id === 'visual');
       if (!op) op = candidates[0];
       return { fromPort: op.id, toPort: ip.id };
@@ -10514,16 +10665,105 @@ function queueThumb(assetId) {
       }).join('\n\n');
     }
 
-    /** 分镜节点：剧本 → 镜头列表（含一致性检查）。 */
+    /** 连到分镜表 music 口的音频节点上的分析结果。 */
+    function upstreamMusicAnalysis(n) {
+      const edge = S.graph.edges.find((e) => e.toNode === n.id && e.toPort === 'music');
+      if (!edge) return null;
+      const src = S.graph.nodes[edge.fromNode];
+      if (!src || src.type !== 'audio') return null;
+      return src;
+    }
+    /** 音频节点：解码 → 压成可上传的 WAV → 宿主调全模态模型；没配供应商则本地节拍。 */
+    async function genAudioNode(n) {
+      if (!n.data.assetId) throw new Error(T('audioNeedFile'));
+      const blob = await assetBlob(n.data.assetId);
+      if (!blob || !blob.size) throw new Error(T('audioNeedFile'));
+      const settings = loadSettings();
+      const cfg = resolveAudioModelCfg(settings, n.data.audioModel || '');
+      let durationSec = 0;
+      let energy = [];
+      let hopSec = 0.25;
+      let audioBase64 = '';
+      let format = 'wav';
+      let truncated = false;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        const ac = new AC();
+        try {
+          const buf = await ac.decodeAudioData(await blob.arrayBuffer());
+          durationSec = buf.duration || 0;
+          const budget = pcmBudget(durationSec);
+          const ds = downsampleMono(buf, budget.sampleRate, budget.sendSec || durationSec);
+          const wav = pcmToWavBlob(ds.samples, ds.sampleRate);
+          audioBase64 = arrayBufferToBase64(await wav.arrayBuffer());
+          truncated = budget.truncated;
+          const curve = rmsEnergy(buf, 0.25);
+          energy = curve.energy;
+          hopSec = curve.hopSec;
+        } catch {
+          audioBase64 = '';
+        } finally { try { ac.close(); } catch { /* 忽略 */ } }
+      }
+      if (!audioBase64 && blob.size < 7200000 && cfg) {
+        audioBase64 = arrayBufferToBase64(await blob.arrayBuffer());
+        format = /wav/i.test(blob.type || '') ? 'wav' : /aac|mp4/i.test(blob.type || '') ? 'aac' : 'mp3';
+      }
+      const payload = {
+        provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' } : null,
+        audioBase64: cfg ? audioBase64 : '',
+        format,
+        durationSec,
+        energy,
+        hopSec,
+        truncated,
+      };
+      const res = await fetch('/' + NS + '/api/audio-understand', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const raw = await res.text();
+      let body = null;
+      try { body = JSON.parse(raw); } catch { body = null; }
+      if (!res.ok || !body || body.error || !body.analysis) {
+        throw new Error((body && body.error) || (T('audioAnalyzeFail') + ' HTTP ' + res.status));
+      }
+      update((s) => {
+        const nd = s.graph.nodes[n.id];
+        if (nd) {
+          nd.data.analysis = body.analysis;
+          nd.data.status = 'done';
+          nd.data.error = null;
+          nd.data.durationSec = body.analysis.durationSec || durationSec || null;
+        }
+        s.assetsTick++;
+      });
+      flushSave();
+      return body.analysis;
+    }
+    /** 分镜节点：剧本 → 镜头列表（含一致性检查）。连了音频分析时改为按拍点铺 MV 分镜。 */
     async function genStoryboardNode(n) {
       const st = storyboardScriptText(n);
-      if (!st) throw new Error(T('aiNeedScript'));
+      const musicNode = upstreamMusicAnalysis(n);
+      if (!st && !(musicNode && musicNode.data && musicNode.data.analysis)) throw new Error(T('aiNeedScript'));
+      if (musicNode && !(musicNode.data && musicNode.data.analysis)) throw new Error(T('audioNeedAnalysis'));
       update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.aiStatus = 'running'; nd.data.aiError = null; nd.data.warnings = []; } });
       aiStreamClear(n.id);
       flushSave();
       try {
         const prev = prevSceneTail(n); // 场 N-1 的尾镜 → 作为本场第 1 镜的硬性承接约束
-        const shots = await aiStoryboardShots(st, n.data.requirement, Number(n.data.count) || 0, n.data.model, (kind, d) => aiStreamAppend(n.id, kind, d), prev, { cont: n.data.cont !== false });
+        let shots;
+        if (musicNode && musicNode.data && musicNode.data.analysis) {
+          const planned = await hostRpc('audioPlanStoryboard', {
+            analysis: musicNode.data.analysis,
+            maxClipSeconds: Number(n.data.segMaxSeconds) || 15,
+            brief: n.data.requirement || '',
+          });
+          shots = (planned && planned.shots) || [];
+          if (!shots.length) throw new Error(T('audioAnalyzeFail'));
+        } else {
+          shots = await aiStoryboardShots(st, n.data.requirement, Number(n.data.count) || 0, n.data.model, (kind, d) => aiStreamAppend(n.id, kind, d), prev, { cont: n.data.cont !== false });
+        }
         // 未闭合引用自愈：句尾丢闭合 @ 的引用按设定集名补全（否则参考图静默丢失）
         const _known = bibleNames(loadBible(S.activeId));
         for (const sh of shots) {
@@ -10594,7 +10834,20 @@ function queueThumb(assetId) {
           skipped.push(segName + '（读取失败：' + String((e && e.message) || e) + '）');
         }
       }
+      const musicEdge = S.graph.edges.find((e) => e.toNode === n.id && e.toPort === 'music');
+      let soundtrackUrl = null;
+      const soundtrackNode = musicEdge && S.graph.nodes[musicEdge.fromNode];
+      const soundtrackAssetId = (soundtrackNode && soundtrackNode.data && soundtrackNode.data.assetId)
+        || n.data.soundtrackAssetId
+        || null;
+      if (soundtrackAssetId) {
+        try {
+          const song = await assetBlob(soundtrackAssetId);
+          if (song && song.size) soundtrackUrl = URL.createObjectURL(song);
+        } catch { soundtrackUrl = null; }
+      }
       if (!metas.length) {
+        if (soundtrackUrl) URL.revokeObjectURL(soundtrackUrl);
         throw new Error(skipped.length
           ? ('没有可合成的片段——' + skipped.join('；'))
           : T('noSegments'));
@@ -10610,9 +10863,16 @@ function queueThumb(assetId) {
       flushSave();
       try {
         const dims = videoDimsFor({ resolution: n.data.resolution, ratio: n.data.ratio });
+        if (soundtrackUrl && n.data.transition && n.data.transition !== 'none') {
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (nd) nd.data.genWarn = T('audioSoundtrackDrift');
+          });
+        }
         const blob = await composeFinalCut(metas, {
           width: dims.w, height: dims.h, keepAudio: n.data.keepAudio !== false, transition: n.data.transition,
           bitrate: n.data.bitrate ? Number(n.data.bitrate) : undefined,
+          soundtrackUrl,
         }, (frac, name) => {
           update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.progress = Math.round(frac * 100) + '% · ' + name; });
         });
@@ -10621,15 +10881,17 @@ function queueThumb(assetId) {
           prompt: metas.length + ' segments', source: 'finalcut', category: 'finalcut',
         });
         metas.forEach((m) => URL.revokeObjectURL(m.url));
+        if (soundtrackUrl) URL.revokeObjectURL(soundtrackUrl);
         update((s) => {
           const nd = s.graph.nodes[n.id];
-          if (nd) { nd.data.status = 'done'; nd.data.assetId = rec.id; nd.data.progress = null; }
+          if (nd) { nd.data.status = 'done'; nd.data.assetId = rec.id; nd.data.progress = null; if (soundtrackAssetId) nd.data.soundtrackAssetId = soundtrackAssetId; }
           s.assetsTick++;
         });
         flushSave();
         return rec.id;
       } catch (e) {
         metas.forEach((m) => URL.revokeObjectURL(m.url));
+        if (soundtrackUrl) URL.revokeObjectURL(soundtrackUrl);
         update((s) => {
           const nd = s.graph.nodes[n.id];
           if (nd) { nd.data.status = 'error'; nd.data.error = String((e && e.message) || e); nd.data.progress = null; }
@@ -10665,6 +10927,7 @@ function queueThumb(assetId) {
       try {
         if (type === 'script') { await genScriptNode(n); return true; }
         if (type === 'storyboard') { await genStoryboardNode(n); return true; }
+        if (type === 'audio') { await genAudioNode(n); return true; }
         if (type === 'finalcut') { await genFinalCutNode(n); return true; }
         if (type !== 'image' && type !== 'video') throw new Error(T('nodeNotRunnable'));
         let prompt = resolvePrompt(n);
@@ -11029,7 +11292,7 @@ function queueThumb(assetId) {
           if (!n) continue;
           // 已在生成中的节点跳过：避免与对话触发的 canvas_run_node 并发调用同一节点（重复计费/重复资产）
           if (n.data && n.data.status === 'running') continue;
-          if (n.type === 'image' || n.type === 'video' || n.type === 'script' || n.type === 'storyboard' || n.type === 'finalcut') {
+          if (n.type === 'image' || n.type === 'video' || n.type === 'script' || n.type === 'storyboard' || n.type === 'finalcut' || n.type === 'audio') {
             await runGenNode(n);
           }
         }
@@ -11572,15 +11835,16 @@ function queueThumb(assetId) {
       // 合并后的图片/视频节点：既是"生成器"也是"资产"（有结果就是资产）
       'image': T('nImage'),
       'video': T('nVideo'),
+      'audio': T('nAudio'),
       'finalcut': T('nFinalCut'),
       'group': T('group'),
     });
     // 生成面板标题行里的类型标签（比节点默认名更长一点，便于区分"节点"）
     const TYPE_TAG = () => ({
       'text': T('tagText'), 'script': T('tagScript'), 'storyboard': T('tagStoryboard'),
-      'image': T('tagImage'), 'video': T('tagVideo'), 'finalcut': T('tagFinalCut'),
+      'image': T('tagImage'), 'video': T('tagVideo'), 'audio': T('tagAudio'), 'finalcut': T('tagFinalCut'),
     });
-    const TYPE_KIND = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'shot', 'image': 'image', 'video': 'video', 'finalcut': 'video', 'group': 'text' };
+    const TYPE_KIND = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'shot', 'image': 'image', 'video': 'video', 'audio': 'audio', 'finalcut': 'video', 'group': 'text' };
 
     /** 节点框相交判定（含最小间距，默认 24px）。 */
     /** 实时碰撞推挤共享核心（拖动 / 节点尺寸变化共用）：与 movers 里节点相交的其他节点，
@@ -11692,7 +11956,7 @@ function queueThumb(assetId) {
       });
     }
 
-    const TYPE_ICON = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'board', 'image': 'image', 'video': 'video', 'finalcut': 'film', 'group': 'folder' };
+    const TYPE_ICON = { 'text': 'text', 'shot': 'shot', 'script': 'script', 'storyboard': 'board', 'image': 'image', 'video': 'video', 'audio': 'audio', 'finalcut': 'film', 'group': 'folder' };
 
     function ungroupNode(id) {
       update((s) => {
@@ -12608,6 +12872,39 @@ function queueThumb(assetId) {
       // PopupSelect 的 customLabel 正常显示；已连分镜时控件禁用，时长改由镜头节拍决定。
       const durOpts = VIDEO_DURATIONS.map((x) => ({ value: String(x), label: x + 's' }));
       const canRun = kind !== 'text';
+      if (kind === 'audio') {
+        const audioModels = flattenAudioModels(settings);
+        const audioRef = n.data.audioModel || '';
+        const an = n.data.analysis;
+        return h('div', {
+          ref: boxRef, className: 'dshic-composer',
+          onPointerDown: (e) => e.stopPropagation(),
+          onWheel: (e) => e.stopPropagation(),
+          onDoubleClick: (e) => e.stopPropagation(),
+        },
+          h('div', { ref: caretRef, className: 'dshic-composer-caret' }),
+          h('div', { className: 'dshic-composer-head' },
+            h('span', { className: 'dshic-composer-title' }, n.data.label || T('nAudio')),
+            h('button', { type: 'button', className: 'dshic-iconbtn', title: T('close'), onPointerDown: (e) => e.stopPropagation(), onClick: closeSelf }, '×')),
+          h('div', { className: 'dshic-hint' }, an && an.summary ? String(an.summary).slice(0, 120) : T('composerAudio')),
+          h('div', { className: 'dshic-composer-controls' },
+            h(PopupSelect, {
+              value: audioRef,
+              options: [{ value: '', label: T('followSettings'), sub: '' }].concat(audioModels.map((m) => ({
+                value: m.ref, label: m.model, sub: m.providerName,
+                title: m.providerName + ' · ' + m.model + (m.ref === settings.audioStar ? ' ★' : ''),
+              }))),
+              onChange: (v) => update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.audioModel = v; }),
+              width: 220, title: T('audioApisLabel'), searchable: true, className: 'is-model', shrink: true,
+            }),
+            h('div', { className: 'dshic-flex' }),
+            h('button', {
+              type: 'button', className: 'dshic-send', title: running ? T('stop') : T('audioAnalyze'),
+              onPointerDown: (e) => e.stopPropagation(),
+              onClick: send,
+            }, running ? Ic('stop', 16) : Ic('arrowUp', 16))),
+        );
+      }
       // 是否还有高级项可折叠：没有就不渲染「更多」开关（文本类节点默认只剩提示词 + 控件行）
       const hasAdvanced = isImage || isVideo || !!(
         n.data.genWarn || n.data.stopNote || n.data.error || n.data.chainFrom || n.data.seam
@@ -14186,6 +14483,70 @@ function queueThumb(assetId) {
       ];
     }
 
+    function AudioNodeBody({ n }) {
+      const url = useAssetUrl(n.data.assetId);
+      const running = n.data.status === 'running';
+      const an = n.data.analysis;
+      const fileRef = useRef(null);
+      const onFile = async (e) => {
+        const f = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (!f) return;
+        const rec = await saveAssetRecord(S.activeId, 'audio', f, { name: f.name, source: 'upload', category: 'audio' }).catch((err) => {
+          toast(T('uploadFailed') + '：' + String((err && err.message) || err));
+          return null;
+        });
+        if (!rec) return;
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (!nd) return;
+          nd.data.assetId = rec.id;
+          nd.data.label = f.name.replace(/\.[a-z0-9]+$/i, '') || nd.data.label;
+          nd.data.analysis = null;
+          nd.data.status = 'idle';
+          nd.data.error = null;
+        });
+        flushSave();
+      };
+      const tags = an
+        ? [
+          an.bpm ? (an.bpm + ' BPM') : '',
+          an.method === 'model' ? T('audioModel') : an.method === 'webaudio' ? T('audioLocal') : T('audioMock'),
+          (an.sections || []).slice(0, 4).map((s) => s.label).join('·'),
+        ].filter(Boolean).join(' · ')
+        : '';
+      return [
+        h('input', { key: 'file', ref: fileRef, type: 'file', accept: 'audio/*,.mp3,.wav,.m4a,.aac,.ogg', style: { display: 'none' }, onChange: onFile }),
+        url
+          ? h('audio', { key: 'player', className: 'dshic-audio', src: url, controls: true, preload: 'metadata', 'data-no-drag': '1', onPointerDown: (e) => e.stopPropagation() })
+          : h('button', {
+            key: 'up', type: 'button', className: 'dshic-mini',
+            onPointerDown: (e) => e.stopPropagation(),
+            onClick: () => { const el = fileRef.current; if (el) el.click(); },
+          }, Ic('audio', 12), T('audioUpload')),
+        running
+          ? h('div', { key: 'run', className: 'dshic-node-row' }, h('span', { className: 'dshic-spin' }), h('span', { className: 'dshic-hint' }, T('audioAnalyzing')))
+          : null,
+        tags ? h('div', { key: 'tags', className: 'dshic-hint', title: (an && an.summary) || '' }, tags) : null,
+        an && an.summary ? h('div', { key: 'sum', className: 'dshic-hint' }, String(an.summary).slice(0, 80)) : null,
+        n.data.error ? h('div', { key: 'err', className: 'dshic-err' }, n.data.error) : null,
+        url
+          ? h('div', { key: 'acts', className: 'dshic-node-row' },
+            h('button', {
+              type: 'button', className: 'dshic-mini',
+              onPointerDown: (e) => e.stopPropagation(),
+              onClick: () => { const el = fileRef.current; if (el) el.click(); },
+            }, T('audioUpload')),
+            h('button', {
+              type: 'button', className: 'dshic-mini',
+              disabled: running,
+              onPointerDown: (e) => e.stopPropagation(),
+              onClick: () => { runGenNode(n); },
+            }, running ? T('audioAnalyzing') : T('audioAnalyze')))
+          : null,
+      ];
+    }
+
     function nodeBody(n, edgeSig) {
       // 兜底：文档入口已归一，但历史上存进撤销快照/外部注入的节点类型仍可能是旧名
       const type = normalizeNodeType(n.type);
@@ -14195,6 +14556,7 @@ function queueThumb(assetId) {
       if (type === 'storyboard') return h(StoryboardNodeBody, { n });
       if (type === 'image') return h(MediaNodeBody, { n, kind: 'image', refSig: edgeSig || '', rev: bumpNodeRev(n) });
       if (type === 'video') return h(MediaNodeBody, { n, kind: 'video', refSig: edgeSig || '', rev: bumpNodeRev(n) });
+      if (type === 'audio') return h(AudioNodeBody, { n });
       if (type === 'finalcut') return h(FinalCutNodeBody, { n });
       return null;
     }
@@ -14244,7 +14606,7 @@ function queueThumb(assetId) {
       if (menu.kind === 'node') {
         const n = S.graph.nodes[menu.nodeId];
         if (!n) return null;
-        const canRun = n.type === 'image' || n.type === 'video';
+        const canRun = n.type === 'image' || n.type === 'video' || n.type === 'audio';
         const items = [
           { label: T('copyNode'), icon: 'plus', fn: () => { update((s) => { s.sel = new Set([n.id]); }); duplicateSelection(); } },
           ...(canRun ? [{ label: T('runNode'), icon: 'play', fn: () => { runGenNode(n); } }] : []),
@@ -17709,6 +18071,7 @@ const DIRECTOR_KEY_HELP = [
       { type: 'storyboard', icon: 'board' },
       { type: 'image', icon: 'image' },
       { type: 'video', icon: 'video' },
+      { type: 'audio', icon: 'audio' },
       { type: 'finalcut', icon: 'film' },
     ];
     function IconRail() {
@@ -18505,7 +18868,15 @@ const DIRECTOR_KEY_HELP = [
         toast(T('moved'));
       };
       const addNodeFor = (a) => {
-        if (a.kind === 'audio') return; // 音频资产在卡片内直接试听
+        if (a.kind === 'audio') {
+          const c = worldCenter();
+          const n = addNodeAt('audio', { x: c.x, y: c.y });
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (nd) { nd.data.assetId = a.id; nd.data.status = 'idle'; nd.data.label = a.name || nd.data.label; nd.data.analysis = null; }
+          });
+          return;
+        }
         if (a.kind === 'text') {
           const c = worldCenter();
           const nd = addNodeAt('text', { x: c.x - 120, y: c.y - 60 });
@@ -18534,7 +18905,7 @@ const DIRECTOR_KEY_HELP = [
         e.target.value = '';
         let failed = 0;
         for (const f of files) {
-          const kind = f.type.startsWith('video/') ? 'video' : f.type.startsWith('image/') ? 'image' : null;
+          const kind = f.type.startsWith('video/') ? 'video' : f.type.startsWith('image/') ? 'image' : (f.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name)) ? 'audio' : null;
           try {
             // 文本（.txt/.md）：入库为文本资产（名称=文件名去扩展名，分类=剧本，归属=当前项目）——
             // 多集小说/剧本一键导入，入库后在资产面板多选批量铺画布（text 节点可直接连分镜表当剧本源）
@@ -18574,10 +18945,10 @@ const DIRECTOR_KEY_HELP = [
       };
       // ---------- 批量选择：一键按列导入画布 / 批量删除 ----------
       // 落点由 layoutBatchColumns 决定（现有节点最右侧之外按列铺开，一列 ≤5，零重叠），
-      // 音频资产不成节点（与单个添加同一口径），导入时跳过并提示数量。
+      // 音频资产铺成音频节点（歌曲），不再整批跳过。
       const selList = assets.filter((a) => selIds.has(a.id));
-      const addableList = selList.filter((a) => a.kind !== 'audio');
-      const audioN = selList.length - addableList.length;
+      const addableList = selList;
+      const audioN = 0;
       const allPageSel = () => shown.length > 0 && shown.every((a) => selIds.has(a.id));
       const toggleSel = (a) => setSelIds((prev) => { const n = new Set(prev); if (n.has(a.id)) n.delete(a.id); else n.add(a.id); return n; });
       const selectAllPage = () => setSelIds((prev) => {
@@ -18593,14 +18964,14 @@ const DIRECTOR_KEY_HELP = [
         const rects = Object.values(S.graph.nodes)
           .filter((nd) => nd.type !== 'group' && !(nd.data && nd.data.hidden))
           .map((nd) => ({ x: Number(nd.x) || 0, y: Number(nd.y) || 0, w: Number(nd.w) || 280, h: Number(nd.h) || 160 }));
-        const items = addableList.map((a) => (a.kind === 'text' ? { w: 360, h: 220 } : nodeSizeForRatio('16:9', { hasFooter: false })));
+        const items = addableList.map((a) => (a.kind === 'text' || a.kind === 'audio' ? { w: 360, h: 360 } : nodeSizeForRatio('16:9', { hasFooter: false })));
         const pts = layoutBatchColumns(rects, items);
         const newIds = [];
         update((s) => {
           addableList.forEach((a, k) => {
             const nd = newNode(a.kind === 'text' ? 'text' : a.kind, pts[k]);
             if (a.kind === 'text') nd.data.text = a.text || '';
-            else { nd.data.assetId = a.id; nd.data.status = 'done'; }
+            else { nd.data.assetId = a.id; nd.data.status = a.kind === 'audio' ? 'idle' : 'done'; if (a.kind === 'audio') nd.data.analysis = null; }
             nd.data.label = a.name || nd.data.label; // 节点名 = 资产名（不再叫 图片1/视频2/文本1）
             s.graph.nodes[nd.id] = nd;
             newIds.push(nd.id);
@@ -18610,7 +18981,7 @@ const DIRECTOR_KEY_HELP = [
         pushHistory();
         flushSave();
         setSelIds(new Set());
-        toast(T('assetsAdded').replace('{n}', String(addable.length)) + (audioN ? '，' + T('assetsAudioSkip').replace('{n}', String(audioN)) : ''));
+        toast(T('assetsAdded').replace('{n}', String(addableList.length)) + (audioN ? '，' + T('assetsAudioSkip').replace('{n}', String(audioN)) : ''));
       };
       const delSelected = async () => {
         const list = selList.slice();
@@ -18759,7 +19130,7 @@ const DIRECTOR_KEY_HELP = [
             h('span', { className: 'dshic-asset-pagecount', 'data-role': 'assets-page-info' }, T('assetsTotalCount').replace('{n}', String(filtered.length))),
           ),
         ),
-        h('input', { key: 'file', ref: fileRef, type: 'file', accept: 'image/*,video/*,.txt,.md,text/plain,text/markdown', multiple: true, style: { display: 'none' }, onChange: onImport }),
+        h('input', { key: 'file', ref: fileRef, type: 'file', accept: 'image/*,video/*,audio/*,.mp3,.wav,.m4a,.aac,.ogg,.txt,.md,text/plain,text/markdown', multiple: true, style: { display: 'none' }, onChange: onImport }),
         loading && !assets.length
           ? h('div', { key: 'loading', className: 'dshic-hint' }, T('aiRunning'))
           : shown.length === 0
@@ -18862,7 +19233,7 @@ const DIRECTOR_KEY_HELP = [
       return h('div', {
         className: cls('dshic-asset', checked && 'is-checked'),
         onClick: () => onToggleSel(a),
-        onDoubleClick: a.kind === 'audio' ? undefined : () => onAdd(a), // 双击 = 单个直接添加（熟练用户捷径）
+        onDoubleClick: () => onAdd(a), // 双击 = 单个直接添加（音频也铺成音频节点）
         title: T('assetClickHint'),
       },
         // 复选框：批量选择入口（单击卡片也切换选中；图标按钮仍 stopPropagation 不受影响）
@@ -19058,20 +19429,34 @@ const DIRECTOR_KEY_HELP = [
     function ModelProviderEditor({ kind }) {
       const [s, setS] = useState(loadSettings);
       const [openId, setOpenId] = useState(null);
-      const listKey = kind === 'image' ? 'imageProviders' : 'videoProviders';
-      const starKey = kind === 'image' ? 'imageStar' : 'videoStar';
-      const icon = kind === 'image' ? 'image' : 'video';
-      const labelKey = kind === 'image' ? 'imageApisLabel' : 'videoApisLabel';
-      const nameKey = kind === 'image' ? 'defaultImageCfg' : 'defaultVideoCfg';
-      const urlKey = kind === 'image' ? 'baseUrl' : 'url';
+      const isAudio = kind === 'audio';
+      const listKey = kind === 'image' ? 'imageProviders' : isAudio ? 'audioProviders' : 'videoProviders';
+      const starKey = kind === 'image' ? 'imageStar' : isAudio ? 'audioStar' : 'videoStar';
+      const icon = kind === 'image' ? 'image' : isAudio ? 'audio' : 'video';
+      const labelKey = kind === 'image' ? 'imageApisLabel' : isAudio ? 'audioApisLabel' : 'videoApisLabel';
+      const nameKey = kind === 'image' ? 'defaultImageCfg' : isAudio ? 'defaultAudioCfg' : 'defaultVideoCfg';
+      const urlKey = kind === 'video' ? 'url' : 'baseUrl';
       const urlPh = kind === 'image'
         ? 'https://api.example.com/v1（或完整 /images/generations 端点）'
-        : 'https://api.example.com/v1/video/generations（或裸域 / /v1）';
+        : isAudio
+          ? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+          : 'https://api.example.com/v1/video/generations（或裸域 / /v1）';
       const persist = (next) => { setS(next); saveSettings(next); };
       const mutate = (fn) => { const next = JSON.parse(JSON.stringify(s)); fn(next); persist(next); };
       const addProvider = () => {
         const id = uid('prov');
-        mutate((d) => { d[listKey] = (d[listKey] || []).concat([{ id, name: T(nameKey) + ' ' + ((d[listKey] || []).length + 1), [urlKey]: '', apiKey: '', extra: '', models: [], ...(kind === 'image' ? { mode: 'generations' } : {}) }]); });
+        const mid = uid('m');
+        mutate((d) => {
+          const item = {
+            id, name: T(nameKey) + ' ' + ((d[listKey] || []).length + 1),
+            [urlKey]: isAudio ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : '',
+            apiKey: '', extra: '',
+            models: isAudio ? [{ id: mid, model: 'qwen3.8-omni-flash' }] : [],
+            ...(kind === 'image' ? { mode: 'generations' } : {}),
+          };
+          d[listKey] = (d[listKey] || []).concat([item]);
+          if (isAudio && !d[starKey]) d[starKey] = id + '|' + mid;
+        });
         setOpenId(id);
       };
       const removeProvider = (id) => {
@@ -19093,6 +19478,7 @@ const DIRECTOR_KEY_HELP = [
         h('div', { className: 'dshic-row' },
           Ic(icon, 12),
           h('strong', { style: { fontSize: 12, flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, T(labelKey)),
+          isAudio ? InfoTip(T('audioProviderHint')) : null,
           h('span', { className: 'dshic-tag st' }, String(list.length)),
           h('button', { type: 'button', className: 'dshic-mini', onClick: addProvider, onPointerDown: (e) => e.stopPropagation() }, Ic('plus', 11), T('addProvider')),
         ),
@@ -19140,8 +19526,8 @@ const DIRECTOR_KEY_HELP = [
                   h('input', { type: 'checkbox', checked: p.generateAudio === true, onChange: (e) => patchProvider(p.id, 'generateAudio', e.target.checked), onPointerDown: (e) => e.stopPropagation() }),
                   h('span', {}, T('vidAudioOpt'))) : null,
               ],
-              (kind === 'image' || kind === 'video') ? [
-                h(Field, { key: 'extra', label: T('cfgExtra'), value: p.extra || '', onChange: (v) => patchProvider(p.id, 'extra', v), placeholder: '{"watermark":false,"prompt_extend":false}', tip: T('cfgExtraHint') }),
+              (kind === 'image' || kind === 'video' || isAudio) ? [
+                h(Field, { key: 'extra', label: T('cfgExtra'), value: p.extra || '', onChange: (v) => patchProvider(p.id, 'extra', v), placeholder: isAudio ? '{"reasoning_effort":"none"}' : '{"watermark":false,"prompt_extend":false}', tip: T('cfgExtraHint') }),
               ] : null,
               h('div', { className: 'dshic-row', style: { marginTop: 4 } },
                 h('span', { className: 'dshic-field-label', style: { flex: 1, minWidth: 0 } }, T('modelsLabel')),
@@ -19153,7 +19539,7 @@ const DIRECTOR_KEY_HELP = [
                   style: { color: s[starKey] === p.id + '|' + m.id ? 'var(--dsw-alias-state-warn-primary)' : 'inherit' },
                   onPointerDown: (e) => e.stopPropagation(), onClick: () => toggleStar(p.id, m.id),
                 }, s[starKey] === p.id + '|' + m.id ? '★' : '☆'),
-                h('input', { className: 'dshic-input', style: { flex: 1, minWidth: 0 }, value: m.model || '', placeholder: T('modelNamePh'), onChange: (e) => patchModel(p.id, m.id, 'model', e.target.value), onPointerDown: (e) => e.stopPropagation() }),
+                h('input', { className: 'dshic-input', style: { flex: 1, minWidth: 0 }, value: m.model || '', placeholder: isAudio ? T('audioModelPh') : T('modelNamePh'), onChange: (e) => patchModel(p.id, m.id, 'model', e.target.value), onPointerDown: (e) => e.stopPropagation() }),
                 h('button', { type: 'button', className: 'dshic-iconbtn', title: T('doDelete'), onPointerDown: (e) => e.stopPropagation(), onClick: () => removeModel(p.id, m.id) }, '×'),
               )),
               !(p.models || []).length ? h('div', { className: 'dshic-hint' }, T('noModelsCfg')) : null,
@@ -19697,6 +20083,7 @@ const DIRECTOR_KEY_HELP = [
         ),
         h(ModelProviderEditor, { key: 'imglist', kind: 'image' }),
         h(ModelProviderEditor, { key: 'vidlist', kind: 'video' }),
+        h(ModelProviderEditor, { key: 'audiolist', kind: 'audio' }),
         h(ApiListEditor, { key: 'ttslist', kind: 'tts' }),
         // 帮助与反馈：一行入口（点开弹窗看二维码与提 Issue）
         h('div', {
@@ -21529,7 +21916,7 @@ const DIRECTOR_KEY_HELP = [
           // 节点体/生成面板组件出口：供 scripts/test-node-actions.mjs 断言「结果操作按钮必须在节点末尾左下角」，
           // 并供 smoke-render 直接渲染新组件（MediaNodeBody / GenComposer）抓渲染期崩溃；
           // NodeShell 用于断言「点击区域规则」：标题栏/底部操作栏不弹面板，只有内容区弹。
-          window.__DSH_IC_NODES__ = { ScriptNodeBody, StoryboardNodeBody, MediaNodeBody, GenComposer, FinalCutNodeBody, TextNodeBody, ShotNodeBody, NodeShell, ComposerAdvanced, VideoControls };
+          window.__DSH_IC_NODES__ = { ScriptNodeBody, StoryboardNodeBody, MediaNodeBody, GenComposer, FinalCutNodeBody, TextNodeBody, ShotNodeBody, AudioNodeBody, NodeShell, ComposerAdvanced, VideoControls };
           // 技能页的非组件出口（不进 __DSH_IC_TABS__ —— 那里会被 smoke-render 当成组件逐个渲染）
           window.__DSH_IC_SKILLPACK__ = {
             SKILL_GLYPHS, loadSkillProfile, saveSkillProfile, buildSkillPackText, buildShotLockText,

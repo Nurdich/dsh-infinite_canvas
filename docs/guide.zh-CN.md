@@ -174,6 +174,7 @@
 - **兼容性**：OpenAI 风格任务接口、Seedance 原生 `content[]`、Sora 风格 `/v1/videos` 自动识别与降级；分辨率/比例/首帧/参考图按厂商惯例自动转换；
 - **文本模型**直接使用 Harness 当前配置的模型，无需额外 Key；
 - **TTS 配音**：同一供应商结构，按镜配音混入成片。
+- **音频理解（音乐 MV）**：同样是供应商 + 模型两级，★ 为默认。预填北京百炼兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 id 预填 `qwen3.8-omni-flash`（也就是 Qwen3.8-Omni-Flash；旧的 `qwen3-omni-flash` 可以手改）。国际站或工作空间端点按控制台粘贴。请求由本机宿主发出，并强制 `stream: true`。不配置时，分析会标明本地节拍或占位，流水线仍能离线跑通。
 
 ---
 
