@@ -47,7 +47,9 @@ import {
   assistantPlannerRoute,
   buildOmniTextBody,
   explainModelError,
-  callOmni,
+  callOmniWithRetry,
+  analysisOuterMaxMs,
+  readOmniProgress,
   CANVAS_ASSISTANT_MAX_STEPS,
   canvasDigest,
   canvasAssistantSystem,
@@ -3403,6 +3405,7 @@ function audioProviderFromConfig(preferRef) {
         baseUrl: p.baseUrl || '',
         apiKey: p.apiKey || '',
         extra: p.extra || '',
+        analysisIdleSec: Number(p.analysisIdleSec) || 0,
         model: String(m.model).trim(),
       });
     }
@@ -3506,6 +3509,11 @@ async function canvasAnalyzeAudio(args) {
     durationSec: Number(args && args.durationSec) || (file && file.duration) || 0,
     energy: energy || undefined,
     hopSec: args && args.hopSec,
+    idleMs: provider && Number(provider.analysisIdleSec) > 0 ? Number(provider.analysisIdleSec) * 1000 : undefined,
+    progressId: args && args.progressId,
+    windowIndex: args && args.windowIndex,
+    windowCount: args && args.windowCount,
+    phase: 'analysis',
   });
   node.data.analysis = analysis;
   node.data.status = 'done';
@@ -4140,10 +4148,14 @@ export function apply(ctx) {
       if (route.route !== 'omni') return complete(req);
       let extra = null;
       try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
-      const text = await callOmni({
+      const text = await callOmniWithRetry({
         baseUrl: route.baseUrl,
         apiKey: provider.apiKey,
         body: buildOmniTextBody({ model: route.model, system: req && req.system, user: req && req.user, extra }),
+        idleMs: Number(provider.analysisIdleSec) > 0 ? Number(provider.analysisIdleSec) * 1000 : undefined,
+        progressId: req && req.progressId,
+        phase: (req && req.phase) || 'timeline',
+        durationSec: req && req.durationSec,
       });
       return { text, model: route.model, provider: 'omni' };
     }
@@ -4157,9 +4169,9 @@ export function apply(ctx) {
       if (name === 'canvas_delete_node') return canvasDeleteNode(a);
       if (name === 'canvas_run_node') return canvasRunNode(a);
       if (name === 'canvas_analyze_audio') return canvasAnalyzeAudio(a);
-      if (name === 'canvas_music_timeline') return canvasMusicTimeline(a, (req) => completeMvText(req));
+      if (name === 'canvas_music_timeline') return canvasMusicTimeline(a, (req) => completeMvText({ ...(req || {}), progressId: a.progressId, phase: 'timeline' }));
       if (name === 'canvas_music_timeline_edit') return canvasMusicTimelineEdit(a);
-      if (name === 'canvas_music_video') return canvasMusicVideo(a, (req) => completeMvText(req));
+      if (name === 'canvas_music_video') return canvasMusicVideo(a, (req) => completeMvText({ ...(req || {}), progressId: a.progressId, phase: 'timeline' }));
       if (name === 'canvas_music_remix') return canvasMusicRemix(a);
       if (name === 'canvas_relayout') return canvasRelayout(a);
       throw new Error('未知工具 ' + name);
@@ -4604,6 +4616,7 @@ export function apply(ctx) {
             baseUrl: String((p && p.baseUrl) || ''),
             apiKey: String((p && p.apiKey) || ''),
             extra: String((p && p.extra) || ''),
+            analysisIdleSec: (p && p.analysisIdleSec != null && String(p.analysisIdleSec).trim() !== '') ? Number(p.analysisIdleSec) : '',
             models: Array.isArray(p && p.models) ? p.models.map((m) => ({ id: String((m && m.id) || ''), model: String((m && m.model) || '') })) : [],
           })),
           star: String((args && args.star) || ''),
@@ -4622,6 +4635,7 @@ export function apply(ctx) {
           defaultBaseUrl: DEFAULT_BASE_URL,
           providers: (saved.providers || []).map((p) => ({
             id: p.id, name: p.name, baseUrl: p.baseUrl, hasKey: !!p.apiKey,
+            analysisIdleSec: p.analysisIdleSec || '',
             models: p.models || [],
           })),
         };
@@ -4635,13 +4649,16 @@ export function apply(ctx) {
         return { ok: true, presets: AUDIO_ENDPOINT_PRESETS };
       },
       async audioBuildTimeline(args) {
-        return canvasMusicTimeline(args || {}, (req) => completeMvText(req));
+        return canvasMusicTimeline(args || {}, (req) => completeMvText({ ...(req || {}), progressId: args && args.progressId, phase: 'timeline', durationSec: args && args.durationSec }));
       },
       async audioPatchTimeline(args) {
         return canvasMusicTimelineEdit(args || {});
       },
       async audioProduceMusicVideo(args) {
-        return canvasMusicVideo(args || {}, (req) => completeMvText(req));
+        return canvasMusicVideo(args || {}, (req) => completeMvText({ ...(req || {}), progressId: args && args.progressId, phase: 'timeline', durationSec: args && args.durationSec }));
+      },
+      async audioProgress(args) {
+        return { ok: true, progress: readOmniProgress(args && args.id) };
       },
       async audioRemix(args) {
         return canvasMusicRemix(args || {});
@@ -4703,10 +4720,13 @@ export function apply(ctx) {
             try {
               let extra = null;
               try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
-              modelText = await callOmni({
+              modelText = await callOmniWithRetry({
                 baseUrl: route.baseUrl,
                 apiKey: provider.apiKey,
                 body: buildOmniTextBody({ model: route.model, system: assistantSystemPrompt(), user, extra }),
+                idleMs: Number(provider.analysisIdleSec) > 0 ? Number(provider.analysisIdleSec) * 1000 : undefined,
+                progressId: args && args.progressId,
+                phase: 'assistant',
               });
             } catch (e) {
               const explained = explainModelError(e, route);
@@ -4776,12 +4796,14 @@ export function apply(ctx) {
         let blocked = null;
         let modelError = '';
         let modelDetail = '';
+        let reasoning = '';
         const scopeId = String((args && args.scopeId) || '');
         const runOne = async (action) => {
           const result = await dispatchCanvasAssistant(action.tool, {
             ...(action.args || {}),
             projectId: args && args.projectId,
             canvasId: toolCanvasId(args),
+            progressId: args && args.progressId,
           });
           const nodeId = (action.args && (action.args.nodeId || action.args.fromNode)) || (result && result.nodeId) || '';
           steps.push({
@@ -4818,12 +4840,23 @@ export function apply(ctx) {
                 const body = buildOmniTextBody({ model: route.model, system, user, extra });
                 body.tools = canvasToolSpecs();
                 body.tool_choice = 'auto';
-                const turn = await callOmni({ baseUrl: route.baseUrl, apiKey: provider.apiKey, body, returnMeta: true });
+                const turn = await callOmniWithRetry({
+                  baseUrl: route.baseUrl,
+                  apiKey: provider.apiKey,
+                  body,
+                  returnMeta: true,
+                  idleMs: Number(provider.analysisIdleSec) > 0 ? Number(provider.analysisIdleSec) * 1000 : undefined,
+                  progressId: args && args.progressId,
+                  phase: 'assistant',
+                });
                 modelText = (turn && turn.text) || '';
                 raw = (turn && turn.raw) || '';
+                if (turn && turn.reasoning) reasoning = turn.reasoning;
                 native = true;
               } catch (e) {
                 const msg = String((e && e.message) || e);
+                if (e && e.partial && e.partial.text) say = e.partial.text;
+                if (e && e.partial && e.partial.reasoning) reasoning = e.partial.reasoning;
                 if (/HTTP 400/.test(msg) && /tool/i.test(msg)) {
                   try {
                     const body = buildOmniTextBody({
@@ -4832,18 +4865,29 @@ export function apply(ctx) {
                       user: user + '\n只回复一个 JSON：{"say":"","tool":"","args":{}}。tool 必须是已有 canvas_ 工具名，没有动作时留空。',
                       extra,
                     });
-                    const turn = await callOmni({ baseUrl: route.baseUrl, apiKey: provider.apiKey, body, returnMeta: true });
+                    const turn = await callOmniWithRetry({
+                      baseUrl: route.baseUrl,
+                      apiKey: provider.apiKey,
+                      body,
+                      returnMeta: true,
+                      idleMs: Number(provider.analysisIdleSec) > 0 ? Number(provider.analysisIdleSec) * 1000 : undefined,
+                      progressId: args && args.progressId,
+                      phase: 'assistant',
+                    });
                     modelText = (turn && turn.text) || '';
                     raw = (turn && turn.raw) || '';
+                    if (turn && turn.reasoning) reasoning = turn.reasoning;
                     native = false;
                   } catch (e2) {
-                    const explained = explainModelError(String((e2 && e2.message) || e2), route);
+                    const explained = explainModelError(e2 && e2.brief ? e2 : String((e2 && e2.message) || e2), route);
                     modelError = explained.brief;
                     modelDetail = explained.detail;
+                    if (e2 && e2.partial && e2.partial.text) say = e2.partial.text;
+                    if (e2 && e2.partial && e2.partial.reasoning) reasoning = e2.partial.reasoning;
                     break;
                   }
                 } else {
-                  const explained = explainModelError(msg, route);
+                  const explained = explainModelError(e && e.brief ? e : msg, route);
                   modelError = explained.brief;
                   modelDetail = explained.detail;
                   break;
@@ -4897,6 +4941,7 @@ export function apply(ctx) {
           {
             role: 'assistant',
             text: say,
+            reasoning,
             steps,
             needsConfirm: !!blocked,
             pending: blocked,
@@ -4920,6 +4965,7 @@ export function apply(ctx) {
           modelDetail,
           modelLabel: route.label,
           planner: route.route,
+          reasoning,
           chat,
         };
       },
@@ -5651,7 +5697,7 @@ export function apply(ctx) {
             additionalProperties: false,
           },
           output: textOutput,
-          timeoutMs: 180000,
+          timeoutMs: analysisOuterMaxMs(),
           async execute(args) {
             return canvasAnalyzeAudio(args || {});
           },
@@ -5674,9 +5720,9 @@ export function apply(ctx) {
             additionalProperties: false,
           },
           output: textOutput,
-          timeoutMs: 180000,
+          timeoutMs: analysisOuterMaxMs(),
           async execute(args) {
-            return canvasMusicTimeline(args || {}, (req) => completeMvText(req));
+            return canvasMusicTimeline(args || {}, (req) => completeMvText({ ...(req || {}), progressId: args && args.progressId, phase: 'timeline' }));
           },
         });
         reg({
@@ -5749,9 +5795,9 @@ export function apply(ctx) {
             additionalProperties: false,
           },
           output: textOutput,
-          timeoutMs: 180000,
+          timeoutMs: analysisOuterMaxMs(),
           async execute(args) {
-            return canvasMusicVideo(args || {}, (req) => completeMvText(req));
+            return canvasMusicVideo(args || {}, (req) => completeMvText({ ...(req || {}), progressId: args && args.progressId, phase: 'timeline' }));
           },
         });
         // ── 技能包：把「本插件有哪些技能、各管什么」和「当前该按什么口径写提示词」交给对话侧 ──
@@ -5874,10 +5920,20 @@ export function apply(ctx) {
             if (typeof method !== 'string' || !Object.hasOwn(methods, method)) throw new Error('未知操作: ' + method);
             const fn = methods[method];
             if (typeof fn !== 'function') throw new Error('未知操作: ' + method);
+            if (/audio|canvasAssistant|Assistant/.test(method)) {
+              const wait = analysisOuterMaxMs();
+              try { if (req.setTimeout) req.setTimeout(wait); } catch { /* 旧宿主没有 setTimeout */ }
+              try { if (res.setTimeout) res.setTimeout(wait); } catch { /* 同上 */ }
+              try { if (req.socket && req.socket.setTimeout) req.socket.setTimeout(wait); } catch { /* 同上 */ }
+            }
             res.end(JSON.stringify(await fn(args ?? {})));
           } catch (e) {
-            res.statusCode = 400;
-            res.end(JSON.stringify({ error: String((e && e.message) || e) }));
+            res.statusCode = e && e.timeout ? 504 : 400;
+            res.end(JSON.stringify({
+              error: String((e && e.message) || e),
+              partial: (e && e.partial) || undefined,
+              retry: !!(e && e.retry),
+            }));
           }
         },
       }),
@@ -6002,6 +6058,10 @@ export function apply(ctx) {
         path: `/${NAME}/api/audio-understand`,
         async handler(req, res) {
           res.setHeader('content-type', 'application/json; charset=utf-8');
+          const wait = analysisOuterMaxMs();
+          try { if (req.setTimeout) req.setTimeout(wait); } catch { /* 旧宿主没有 setTimeout */ }
+          try { if (res.setTimeout) res.setTimeout(wait); } catch { /* 同上 */ }
+          try { if (req.socket && req.socket.setTimeout) req.socket.setTimeout(wait); } catch { /* 同上 */ }
           try {
             if (req.method !== 'POST') {
               res.statusCode = 405;
@@ -6024,8 +6084,12 @@ export function apply(ctx) {
             const analysis = await understandFromRequest(payload);
             res.end(JSON.stringify({ ok: true, analysis }));
           } catch (e) {
-            res.statusCode = 400;
-            res.end(JSON.stringify({ error: String((e && e.message) || e) }));
+            res.statusCode = e && e.timeout ? 504 : 400;
+            res.end(JSON.stringify({
+              error: String((e && e.message) || e),
+              partial: (e && e.partial) || undefined,
+              retry: !!(e && e.retry),
+            }));
           }
         },
       }),

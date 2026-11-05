@@ -1202,6 +1202,14 @@ export function buildOmniTextBody({ model, system, user, extra }) {
 
 /** 把余额、鉴权、限流、超时收成一句中文，并点名实际使用的模型。原文留给详情。 */
 export function explainModelError(err, route) {
+  if (err && err.brief) {
+    return {
+      brief: String(err.brief),
+      detail: String((err.detail || err.message) || '').slice(0, 800),
+      model: (route && route.model) || '',
+      place: (route && route.place) || '',
+    };
+  }
   const raw = String((err && err.message) || err || '');
   const status = Number(err && err.status) || Number((/HTTP\s+(\d+)/.exec(raw) || [])[1]) || 0;
   const who = (route && route.label) || (route && route.model) || '模型';
@@ -1607,35 +1615,385 @@ export function mockAnalysis(durationSec, extraWarnings) {
   }, { source: 'local-fallback', method: 'mock', model: null, durationSec: dur, warnings });
 }
 
-export async function callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs, returnMeta }) {
+/** 没收到新数据多久就中断。整段还有单独的总时长上限。 */
+export const ANALYSIS_IDLE_MS = 90000;
+export const ANALYSIS_MIN_TOTAL_MS = 10 * 60 * 1000;
+export const ANALYSIS_MAX_TOTAL_MS = 30 * 60 * 1000;
+export const ANALYSIS_RETRY_LIMIT = 2;
+export const ANALYSIS_RETRY_BACKOFF_MS = [2000, 6000];
+
+/**
+ * 每一段（一个窗口）自己的预算。
+ * 总时长默认 max(10 分钟, 4×这段音频)，封顶 30 分钟。
+ * idleMs 是静默上限：流还在吐字就不算超时。
+ * 显式 totalMs 用于测试或调用方覆盖，不再被 180 秒截断。
+ */
+export function analysisBudget({ durationSec, idleMs, totalMs } = {}) {
+  const idle = Number(idleMs) > 0 ? Math.min(ANALYSIS_MAX_TOTAL_MS, Number(idleMs)) : ANALYSIS_IDLE_MS;
+  const scaled = Math.max(ANALYSIS_MIN_TOTAL_MS, Math.round((Number(durationSec) || 0) * 4000));
+  const total = Number(totalMs) > 0
+    ? Math.min(ANALYSIS_MAX_TOTAL_MS, Number(totalMs))
+    : Math.min(ANALYSIS_MAX_TOTAL_MS, scaled);
+  return { idleMs: idle, totalMs: Math.max(total, idle) };
+}
+
+/** 外层（工具、RPC、浏览器）至少要盖住全部尝试和退避。 */
+export function analysisOuterMs(budget, attempts) {
+  const b = budget || analysisBudget({});
+  const tries = Math.max(1, Number(attempts) || (ANALYSIS_RETRY_LIMIT + 1));
+  let backoff = 0;
+  for (let i = 0; i < tries - 1; i++) backoff += ANALYSIS_RETRY_BACKOFF_MS[i] || 6000;
+  return b.totalMs * tries + backoff + 15000;
+}
+
+export function analysisOuterMaxMs() {
+  return analysisOuterMs(analysisBudget({ durationSec: 24 * 3600 }));
+}
+
+export function formatClock(ms) {
+  const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  if (m >= 60) return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分 ' + String(sec).padStart(2, '0') + ' 秒';
+  if (m > 0) return m + ' 分 ' + String(sec).padStart(2, '0') + ' 秒';
+  return sec + ' 秒';
+}
+
+/** 一句中文：哪一段、等了多久。界面上另有「重试」。 */
+export function explainAnalysisTimeout({ windowIndex, windowCount, elapsedMs, idleMs, reason } = {}) {
+  const n = (Number(windowIndex) || 0) + 1;
+  const total = Math.max(n, Number(windowCount) || n);
+  const why = reason === 'idle'
+    ? '（' + Math.round((Number(idleMs) || ANALYSIS_IDLE_MS) / 1000) + ' 秒没有新数据）'
+    : '（已到这段的总时长上限）';
+  return '第 ' + n + '/' + total + ' 段在 ' + formatClock(elapsedMs) + '后超时' + why + '，可点重试。';
+}
+
+export function isTransientOmniError(err) {
+  if (!err) return false;
+  if (err.timeout) return true;
+  const status = Number(err.status) || Number((/HTTP\s+(\d+)/.exec(String(err.message || '')) || [])[1]) || 0;
+  if (status >= 500 && status <= 599) return true;
+  const msg = String(err.message || err || '');
+  return /timeout|timed out|超时|aborted|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg);
+}
+
+function deltaText(v) {
+  if (typeof v === 'string') return v;
+  if (!Array.isArray(v)) return '';
+  let out = '';
+  for (const part of v) {
+    if (typeof part === 'string') out += part;
+    else if (part && typeof part.text === 'string') out += part.text;
+  }
+  return out;
+}
+
+/** 增量 SSE。半行留在缓冲里，下一块接上。 */
+export function createSseAccumulator() {
+  let buf = '';
+  let text = '';
+  let reasoning = '';
+  const take = (payload) => {
+    if (!payload || payload === '[DONE]') return;
+    let j = null;
+    try { j = JSON.parse(payload); } catch { return; }
+    const choice = j && j.choices && j.choices[0];
+    const delta = (choice && choice.delta) || {};
+    const msg = (choice && choice.message) || {};
+    text += deltaText(delta.content != null ? delta.content : msg.content);
+    const reason = delta.reasoning_content != null ? delta.reasoning_content
+      : (delta.reasoning != null ? delta.reasoning
+        : (msg.reasoning_content != null ? msg.reasoning_content : msg.reasoning));
+    reasoning += deltaText(reason);
+  };
+  return {
+    push(chunk) {
+      buf += String(chunk || '');
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        const s = line.trim();
+        if (!s.startsWith('data:')) continue;
+        take(s.slice(5).trim());
+      }
+      return { text, reasoning };
+    },
+    finish() {
+      const rest = buf.trim();
+      if (rest.startsWith('data:')) take(rest.slice(5).trim());
+      buf = '';
+      return { text, reasoning };
+    },
+  };
+}
+
+const omniProgress = new Map();
+
+export function openOmniProgress(id, meta) {
+  const key = String(id || '');
+  if (!key) return null;
+  const prev = omniProgress.get(key) || {};
+  const rec = {
+    id: key,
+    text: prev.text || '',
+    reasoning: prev.reasoning || '',
+    phase: (meta && meta.phase) || prev.phase || 'analysis',
+    windowIndex: meta && meta.windowIndex != null ? Number(meta.windowIndex) : (prev.windowIndex || 0),
+    windowCount: meta && meta.windowCount != null ? Number(meta.windowCount) : (prev.windowCount || 1),
+    startedAt: prev.startedAt || Date.now(),
+    lastChunkAt: prev.lastChunkAt || 0,
+    done: false,
+    error: '',
+    idleMs: (meta && meta.idleMs) || prev.idleMs || ANALYSIS_IDLE_MS,
+    totalMs: (meta && meta.totalMs) || prev.totalMs || ANALYSIS_MIN_TOTAL_MS,
+  };
+  omniProgress.set(key, rec);
+  return rec;
+}
+
+export function pushOmniProgress(id, patch) {
+  const rec = omniProgress.get(String(id || ''));
+  if (!rec || !patch) return rec || null;
+  if (typeof patch.text === 'string' && patch.text.length >= rec.text.length) rec.text = patch.text;
+  if (typeof patch.reasoning === 'string' && patch.reasoning.length >= rec.reasoning.length) rec.reasoning = patch.reasoning;
+  if (patch.lastChunkAt) rec.lastChunkAt = patch.lastChunkAt;
+  if (patch.phase) rec.phase = patch.phase;
+  if (patch.windowIndex != null) rec.windowIndex = Number(patch.windowIndex);
+  if (patch.windowCount != null) rec.windowCount = Number(patch.windowCount);
+  if (patch.error) rec.error = String(patch.error);
+  if (patch.done) rec.done = true;
+  return rec;
+}
+
+export function readOmniProgress(id) {
+  const rec = omniProgress.get(String(id || ''));
+  if (!rec) return null;
+  const now = Date.now();
+  return {
+    ...rec,
+    elapsedMs: now - rec.startedAt,
+    receiving: !rec.done && rec.lastChunkAt > 0 && (now - rec.lastChunkAt) < 4000,
+  };
+}
+
+export function closeOmniProgress(id) {
+  const rec = omniProgress.get(String(id || ''));
+  if (rec) rec.done = true;
+}
+
+function analysisTimeoutError(info, partial) {
+  const brief = explainAnalysisTimeout(info);
+  const err = new Error(brief);
+  err.timeout = true;
+  err.retry = true;
+  err.brief = brief;
+  err.status = 408;
+  err.elapsedMs = info.elapsedMs;
+  err.windowIndex = info.windowIndex;
+  err.windowCount = info.windowCount;
+  err.partial = { text: (partial && partial.text) || '', reasoning: (partial && partial.reasoning) || '' };
+  err.detail = brief;
+  return err;
+}
+
+async function readOmniBody(res, { signal, onChunk }) {
+  const body = res && res.body;
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    const dec = new TextDecoder();
+    let all = '';
+    const onAbort = () => { try { reader.cancel(); } catch { /* 已结束 */ } };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      while (true) {
+        const step = await reader.read();
+        if (step.done) break;
+        const chunk = dec.decode(step.value, { stream: true });
+        all += chunk;
+        if (onChunk) onChunk(chunk);
+      }
+      all += dec.decode();
+      return all;
+    } finally {
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+  }
+  return typeof res.text === 'function' ? res.text() : '';
+}
+
+export async function callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs, idleMs, durationSec, returnMeta, onDelta, progressId, windowIndex, windowCount, phase }) {
   const fetchFn = fetchImpl || globalThis.fetch;
   if (typeof fetchFn !== 'function') throw new Error('当前环境没有 fetch，无法调用音频理解模型');
-  const url = chatCompletionsUrl(baseUrl);
-  const send = (b) => fetchFn(url, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: 'Bearer ' + String(apiKey || '').trim(),
-    },
-    body: JSON.stringify(b),
-    signal: AbortSignal.timeout(Math.max(5000, num(timeoutMs, 180000))),
+  const budget = analysisBudget({
+    durationSec,
+    idleMs,
+    totalMs: Number(timeoutMs) > ANALYSIS_MIN_TOTAL_MS ? Number(timeoutMs) : 0,
   });
-  let res = await send(body);
-  let text = await res.text();
-  if (!res.ok && res.status === 400 && body && body.response_format && /response_format|json_object/i.test(text)) {
-    const retry = { ...body };
-    delete retry.response_format;
-    res = await send(retry);
-    text = await res.text();
+  const url = chatCompletionsUrl(baseUrl);
+  const win = { windowIndex: Number(windowIndex) || 0, windowCount: Number(windowCount) || 1 };
+  if (progressId) openOmniProgress(progressId, { phase: phase || 'analysis', ...win, idleMs: budget.idleMs, totalMs: budget.totalMs });
+  const ctrl = new AbortController();
+  const started = Date.now();
+  let last = started;
+  let abortReason = '';
+  const timer = setInterval(() => {
+    const now = Date.now();
+    if (!abortReason && now - last >= budget.idleMs) abortReason = 'idle';
+    else if (!abortReason && now - started >= budget.totalMs) abortReason = 'total';
+    if (abortReason) ctrl.abort();
+  }, 200);
+  if (timer.unref) timer.unref();
+  let raw = '';
+  const sendStream = async (b) => {
+    last = Date.now();
+    raw = '';
+    const local = createSseAccumulator();
+    let res;
+    try {
+      res = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer ' + String(apiKey || '').trim(),
+        },
+        body: JSON.stringify(b),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      if (abortReason || ctrl.signal.aborted) {
+        throw analysisTimeoutError({ ...win, elapsedMs: Date.now() - started, idleMs: budget.idleMs, reason: abortReason || 'idle' }, local.finish());
+      }
+      throw e;
+    }
+    last = Date.now();
+    let text = '';
+    try {
+      text = await readOmniBody(res, {
+        signal: ctrl.signal,
+        onChunk: (chunk) => {
+          last = Date.now();
+          raw += chunk;
+          const snap = local.push(chunk);
+          if (progressId) pushOmniProgress(progressId, { text: snap.text, reasoning: snap.reasoning, lastChunkAt: last, ...win });
+          if (onDelta) onDelta(snap);
+        },
+      });
+    } catch (e) {
+      const snap = local.finish();
+      if (abortReason || ctrl.signal.aborted) {
+        throw analysisTimeoutError({ ...win, elapsedMs: Date.now() - started, idleMs: budget.idleMs, reason: abortReason || 'total' }, snap);
+      }
+      const err = e instanceof Error ? e : new Error(String(e));
+      err.partial = snap;
+      throw err;
+    }
+    if (!raw) raw = text;
+    const snap = local.finish();
+    if ((snap.text || snap.reasoning) && onDelta) onDelta(snap);
+    if (progressId && (snap.text || snap.reasoning)) pushOmniProgress(progressId, { text: snap.text, reasoning: snap.reasoning, lastChunkAt: last, ...win });
+    return { res, text: raw || text, snap };
+  };
+  try {
+    let out = await sendStream(body);
+    if (!out.res.ok && out.res.status === 400 && body && body.response_format && /response_format|json_object/i.test(out.text)) {
+      const retry = { ...body };
+      delete retry.response_format;
+      out = await sendStream(retry);
+    }
+    if (!out.res.ok) {
+      const err = new Error('音频理解 HTTP ' + out.res.status + '：' + String(out.text || '').slice(0, 300));
+      err.status = out.res.status;
+      err.partial = out.snap || { text: '', reasoning: '' };
+      if (isTransientOmniError(err)) err.retry = true;
+      throw err;
+    }
+    const snap = out.snap || { text: '', reasoning: '' };
+    const parsed = snap.text && snap.text.trim() ? snap.text : parseOmniResponse(out.text);
+    if (progressId) {
+      pushOmniProgress(progressId, { text: parsed, reasoning: snap.reasoning, done: true, ...win });
+      closeOmniProgress(progressId);
+    }
+    if (returnMeta) return { text: parsed, raw: out.text, toolCalls: extractToolCalls(out.text), reasoning: snap.reasoning || '' };
+    return parsed;
+  } catch (e) {
+    if (e && e.timeout) throw e;
+    if (abortReason || (ctrl.signal && ctrl.signal.aborted)) {
+      throw analysisTimeoutError({ ...win, elapsedMs: Date.now() - started, idleMs: budget.idleMs, reason: abortReason || 'total' }, { text: '', reasoning: '' });
+    }
+    throw e;
+  } finally {
+    clearInterval(timer);
   }
-  if (!res.ok) {
-    const err = new Error('音频理解 HTTP ' + res.status + '：' + String(text || '').slice(0, 300));
-    err.status = res.status;
-    throw err;
+}
+
+export async function callOmniWithRetry(opts) {
+  const sleep = (opts && opts.sleep) || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let best = { text: '', reasoning: '' };
+  let last = null;
+  for (let attempt = 0; attempt <= ANALYSIS_RETRY_LIMIT; attempt++) {
+    try {
+      return await callOmni({
+        ...(opts || {}),
+        onDelta: (d) => {
+          if ((d.text || '').length >= best.text.length) best = { text: d.text || '', reasoning: d.reasoning || best.reasoning || '' };
+          else if ((d.reasoning || '').length >= (best.reasoning || '').length) best = { ...best, reasoning: d.reasoning };
+          if (opts && opts.progressId) pushOmniProgress(opts.progressId, { text: best.text, reasoning: best.reasoning, lastChunkAt: Date.now() });
+          if (opts && opts.onDelta) opts.onDelta(best);
+        },
+      });
+    } catch (e) {
+      last = e;
+      if (e && e.partial) {
+        if ((e.partial.text || '').length >= best.text.length) best = { text: e.partial.text || '', reasoning: e.partial.reasoning || best.reasoning || '' };
+      }
+      e.partial = best;
+      if (!isTransientOmniError(e) || attempt === ANALYSIS_RETRY_LIMIT) throw e;
+      await sleep(ANALYSIS_RETRY_BACKOFF_MS[attempt] || 6000);
+    }
   }
-  const parsed = parseOmniResponse(text);
-  if (returnMeta) return { text: parsed, raw: text, toolCalls: extractToolCalls(text) };
-  return parsed;
+  throw last;
+}
+
+/** 失败的窗口重试，已经听完的窗口留着。 */
+export async function runWindows(windows, runOne, opts) {
+  const list = windows || [];
+  const sleep = (opts && opts.sleep) || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const parts = [];
+  for (let i = 0; i < list.length; i++) {
+    let caught = null;
+    for (let attempt = 0; attempt <= ANALYSIS_RETRY_LIMIT; attempt++) {
+      try {
+        const analysis = await runOne(list[i], { attempt, index: i, count: list.length });
+        parts.push({ offsetSec: Number(list[i].offsetSec != null ? list[i].offsetSec : list[i].startSec) || 0, analysis });
+        caught = null;
+        break;
+      } catch (e) {
+        caught = e;
+        if (!isTransientOmniError(e) || attempt === ANALYSIS_RETRY_LIMIT) break;
+        await sleep(ANALYSIS_RETRY_BACKOFF_MS[attempt] || 6000);
+      }
+    }
+    if (caught) {
+      const info = {
+        windowIndex: i,
+        windowCount: list.length,
+        elapsedMs: caught.elapsedMs,
+        idleMs: caught.idleMs,
+        reason: caught.timeout ? (caught.brief && /没有新数据/.test(caught.brief) ? 'idle' : 'total') : '',
+      };
+      const err = new Error(caught.brief || explainAnalysisTimeout(info));
+      err.timeout = !!caught.timeout;
+      err.retry = true;
+      err.parts = parts.slice();
+      err.partial = caught.partial || null;
+      err.windowIndex = i;
+      err.windowCount = list.length;
+      err.brief = err.message;
+      throw err;
+    }
+  }
+  return parts;
 }
 
 export function buildFrameDescribeBody({ model, imageDataUrl }) {
@@ -1668,8 +2026,9 @@ export async function describeFrameFromRequest(req, fetchImpl) {
   }
   if (image.length > 1500000) return { description: '', fallback: true, reason: '关键帧过大，跳过描述。' };
   const url = image.startsWith('data:') ? image : ('data:image/jpeg;base64,' + image);
-  const content = await callOmni({
-    baseUrl, apiKey, fetchImpl, timeoutMs: r.timeoutMs || 60000,
+  const content = await callOmniWithRetry({
+    baseUrl, apiKey, fetchImpl,
+    idleMs: r.idleMs || r.timeoutMs,
     body: buildFrameDescribeBody({ model, imageDataUrl: url }),
   });
   const json = extractJsonObject(content);
@@ -1714,7 +2073,16 @@ export async function understandFromRequest(req, fetchImpl) {
       format: r.format || 'wav',
       extra: parseExtra(provider.extra),
     });
-    const content = await callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs: r.timeoutMs });
+    const content = await callOmniWithRetry({
+      baseUrl, apiKey, body, fetchImpl,
+      idleMs: r.idleMs,
+      durationSec,
+      progressId: r.progressId,
+      windowIndex: r.windowIndex,
+      windowCount: r.windowCount,
+      phase: r.phase || 'analysis',
+      sleep: r.sleep,
+    });
     const json = extractJsonObject(content);
     if (!json) throw new Error('音频理解模型没有返回可解析的 JSON');
     return normalizeAnalysis(json, {
