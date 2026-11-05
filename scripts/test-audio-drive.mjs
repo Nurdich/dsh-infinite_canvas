@@ -319,6 +319,35 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(AD.nextAutoStep({ hasAudio: true }).tool === 'analyze' && AD.nextAutoStep({ hasAudio: true }).spends === false, '自动推进不应第一步就生成');
   const parsed = AD.parseAssistantAction('说明\n{"say":"只改这一镜","tool":"edit_shot","args":{"sceneIndex":0,"complaint":"多了一个人"}}');
   ok(parsed && parsed.tool === 'edit_shot' && parsed.spends === false, '模型返回的工具没有解析出来');
+  const sg = AD.assistantPlannerRoute({
+    model: 'qwen3-omni-flash',
+    baseUrl: 'https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1',
+    apiKey: 'sk-test',
+  });
+  ok(sg.route === 'omni' && sg.model === 'qwen3-omni-flash' && sg.place === '新加坡', '配了新加坡音频理解却没有选它：' + JSON.stringify(sg));
+  ok(AD.assistantPlannerRoute(null).route === 'harness', '没配音频理解时应改走文本模型');
+  ok(AD.assistantPlannerRoute({ model: 'qwen3-omni-flash', baseUrl: sg.baseUrl, apiKey: '' }).route === 'harness', '没有 Key 不能当成已配置');
+  const textBody = AD.buildOmniTextBody({
+    model: 'qwen3-omni-flash', system: 'sys', user: 'hi', extra: { stream: false, modalities: ['text', 'audio'] },
+  });
+  ok(textBody.stream === true && JSON.stringify(textBody.modalities) === '["text"]', '助手规划必须强制 stream 且只要文本');
+  ok(!JSON.stringify(textBody).includes('input_audio'), '纯文本规划不应带 input_audio');
+  const bal = AD.explainModelError({ status: 400, message: 'Insufficient Balance' }, sg);
+  ok(bal.brief === 'qwen3-omni-flash（新加坡）余额不足，请充值或在设置里换模型', '余额不足没有点名模型：' + bal.brief);
+  ok(/Insufficient Balance/.test(bal.detail), '原文没有留在详情里');
+  ok(/Key 无效/.test(AD.explainModelError({ status: 401, message: 'Unauthorized' }, sg).brief), '401 没有翻成 Key 无效');
+  ok(/过于频繁/.test(AD.explainModelError({ status: 429, message: 'rate limit' }, sg).brief), '429 没有翻成限流');
+  ok(/超时/.test(AD.explainModelError({ message: 'The request timed out' }, sg).brief), '超时没有翻成中文');
+  const hostSrc = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  const turnStart = hostSrc.indexOf('async audioAssistantTurn');
+  const turnEnd = hostSrc.indexOf('async audioPlanStoryboard', turnStart);
+  const turnSrc = hostSrc.slice(turnStart, turnEnd);
+  ok(turnSrc.includes('buildOmniTextBody') && turnSrc.includes("route.route === 'omni'"), '助手规划没有走音频理解请求');
+  const omniBranch = turnSrc.split("route.route === 'omni'")[1].split('} else {')[0];
+  ok(omniBranch && !omniBranch.includes('complete('), '配了音频理解时仍会改走默认文本模型');
+  const clientSrc = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+  const analyzeFn = clientSrc.slice(clientSrc.indexOf('async function genAudioNode'), clientSrc.indexOf('async function genStoryboardNode'));
+  ok(analyzeFn.includes('tlNeedOmni') && !analyzeFn.includes('complete('), '听歌分析在没配音频理解时不应去叫文本模型');
 }
 
 // ---------- 对话工具：分析 → 分镜 → 成片声轨 ----------

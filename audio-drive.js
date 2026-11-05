@@ -868,6 +868,72 @@ export function analysisPrompt() {
  * Qwen-Omni（含 qwen3-omni-flash / qwen3.8-omni-flash）要求 stream=true，否则接口报错。
  * 这里在合并扩展参数之后仍强制 stream 与 modalities:["text"]（分析不要语音回传）。
  */
+/** 端点所在地域，用来在界面上写明实际调用的是哪一个。 */
+export function omniPlaceLabel(baseUrl) {
+  const u = String(baseUrl || '');
+  if (/ap-southeast-1|singapore/i.test(u)) return '新加坡';
+  if (/dashscope-intl/i.test(u)) return '国际';
+  if (/dashscope\.aliyuncs\.com/i.test(u)) return '北京';
+  return '';
+}
+
+/** 配齐了音频理解就用它做助手规划；缺 Key / 地址 / 模型名才改走文本模型。 */
+export function assistantPlannerRoute(provider) {
+  const p = provider || {};
+  const model = String(p.model || '').trim();
+  const baseUrl = String(p.baseUrl || '').trim();
+  const apiKey = String(p.apiKey || '').trim();
+  if (model && baseUrl && apiKey) {
+    const place = omniPlaceLabel(baseUrl);
+    return { route: 'omni', model, baseUrl, place, label: model + (place ? '（' + place + '）' : '') };
+  }
+  return { route: 'harness', model: '', baseUrl: '', place: '', label: '文本模型' };
+}
+
+/**
+ * 纯文本的全模态请求。不带 input_audio。
+ * 合并扩展参数之后仍强制 stream=true、modalities 只有 text。
+ */
+export function buildOmniTextBody({ model, system, user, extra }) {
+  const body = {
+    model: String(model || SUGGESTED_MODEL_ID).trim() || SUGGESTED_MODEL_ID,
+    messages: [
+      ...(system ? [{ role: 'system', content: String(system) }] : []),
+      { role: 'user', content: [{ type: 'text', text: String(user || '') }] },
+    ],
+    modalities: ['text'],
+    stream: true,
+    stream_options: { include_usage: true },
+    response_format: { type: 'json_object' },
+    reasoning_effort: 'none',
+  };
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(body, extra);
+  body.stream = true;
+  body.modalities = ['text'];
+  if (!body.stream_options || typeof body.stream_options !== 'object') body.stream_options = { include_usage: true };
+  return body;
+}
+
+/** 把余额、鉴权、限流、超时收成一句中文，并点名实际使用的模型。原文留给详情。 */
+export function explainModelError(err, route) {
+  const raw = String((err && err.message) || err || '');
+  const status = Number(err && err.status) || Number((/HTTP\s+(\d+)/.exec(raw) || [])[1]) || 0;
+  const who = (route && route.label) || (route && route.model) || '模型';
+  let brief = who + '调用失败，请到设置里检查音频理解';
+  if (/insufficient balance|余额不足|arrearage|overdue-payment|quota exceeded|欠费/i.test(raw)) {
+    brief = who + '余额不足，请充值或在设置里换模型';
+  } else if (status === 401 || /401|invalid api[- ]?key|unauthorized|invalid_api_key/i.test(raw)) {
+    brief = who + '的 Key 无效，请到设置里检查音频理解';
+  } else if (status === 429 || /429|rate limit|too many requests/i.test(raw)) {
+    brief = who + '请求过于频繁，请稍后再试';
+  } else if (status === 408 || /timeout|timed out|超时|etimedout|aborterror/i.test(raw)) {
+    brief = who + '超时，请再试一次';
+  } else if (!route || route.route === 'harness') {
+    brief = '没有走音频理解，文本模型也失败了：' + raw.slice(0, 80);
+  }
+  return { brief, detail: raw.slice(0, 800), model: (route && route.model) || '', place: (route && route.place) || '' };
+}
+
 export function buildOmniChatBody({ model, audioBase64, audioUrl, format, extra, prompt }) {
   const field = audioDataField(audioUrl || audioBase64, format);
   const body = {
