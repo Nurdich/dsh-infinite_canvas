@@ -1179,6 +1179,10 @@ function revealCanvasInRight() {
       'tlShotStage': '分镜图',
       'tlVideoStage': '视频',
       'tlRelock': '重新生成已定稿的设定，下游分镜和视频会标成需重生成',
+      'tlQueued': '排队中',
+      'tlCancelAll': '全部停止',
+      'genConcurrency': '并发数',
+      'genConcurrencyHint': '同时发出的请求数。图片默认 4，视频默认 2。遇到限流会自动减半。',
       'tlZoom': '缩放',
       'tlStory': '剧情',
       'tlCast': '角色',
@@ -2268,6 +2272,10 @@ function revealCanvasInRight() {
       'tlShotStage': 'Storyboard frames',
       'tlVideoStage': 'Video',
       'tlRelock': 'Regenerate this locked sheet. Downstream frames and videos will be marked for redo',
+      'tlQueued': 'Queued',
+      'tlCancelAll': 'Stop all',
+      'genConcurrency': 'Concurrency',
+      'genConcurrencyHint': 'How many requests to send at once. Images default to 4, videos to 2. A rate limit halves it.',
       'tlZoom': 'Zoom',
       'tlStory': 'Story',
       'tlCast': 'Cast',
@@ -3970,7 +3978,7 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       for (const p of settings.imageProviders || []) {
         for (const m of (p.models || [])) {
           if (!m || !m.id || !String(m.model || '').trim()) continue;
-          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '', size: p.size || '', responseFormat: p.responseFormat || '', mode: p.mode || 'generations' });
+          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '', size: p.size || '', responseFormat: p.responseFormat || '', mode: p.mode || 'generations', concurrency: p.concurrency || '' });
         }
       }
       return out;
@@ -3981,7 +3989,7 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
         for (const m of (p.models || [])) {
           if (!m || !m.id || !String(m.model || '').trim()) continue;
           // vendor 必须带出去：否则「显式选了厂商」在请求侧丢失，只能靠模型名/URL 猜协议（曾把万相误判成 Seedance）
-          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), url: p.url || '', apiKey: p.apiKey || '', extra: p.extra || '', outputFormat: p.outputFormat || '', generateAudio: p.generateAudio, protocol: p.protocol || 'generic', watermark: p.watermark, vendor: p.vendor || '' });
+          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), url: p.url || '', apiKey: p.apiKey || '', extra: p.extra || '', outputFormat: p.outputFormat || '', generateAudio: p.generateAudio, protocol: p.protocol || 'generic', watermark: p.watermark, vendor: p.vendor || '', concurrency: p.concurrency || '' });
         }
       }
       return out;
@@ -10164,13 +10172,13 @@ function queueThumb(assetId) {
           const audios = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.type === 'audio' && nd.data && nd.data.mvPackage);
           const audio = (r.args && r.args.audioId && S.graph.nodes[r.args.audioId]) || audios[0];
           const owned = Object.values(S.graph.nodes || {}).filter((nd) => audio && nd && nd.data && nd.data.mvFrom === audio.id);
-          let list = [];
-          if (r.clientJob === 'gen-refs') list = owned.filter((nd) => (nd.data.mvRole === 'char' || nd.data.mvRole === 'loc') && !nd.data.assetId);
-          else if (r.clientJob === 'gen-shots') list = owned.filter((nd) => nd.data.mvRole === 'shot' && !nd.data.assetId);
-          else if (r.clientJob === 'gen-videos') list = owned.filter((nd) => nd.data.mvRole === 'video' && !nd.data.assetId && !nd.data.skipGen);
-          else if (r.clientJob === 'regen-failed') list = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && (nd.data.status === 'error' || nd.data.adapt));
-          for (const nd of list) {
-            try { await runGenNode(nd); } catch { /* 一项失败不挡住后面的节点 */ }
+          if (r.clientJob === 'gen-refs') await runNodePool(owned.filter((nd) => (nd.data.mvRole === 'char' || nd.data.mvRole === 'loc') && !nd.data.assetId), 'image', T('tlRefStage'));
+          else if (r.clientJob === 'gen-shots') await runNodePool(owned.filter((nd) => nd.data.mvRole === 'shot' && !nd.data.assetId), 'image', T('tlShotStage'));
+          else if (r.clientJob === 'gen-videos') await runNodePool(owned.filter((nd) => nd.data.mvRole === 'video' && !nd.data.assetId && !nd.data.skipGen), 'video', T('tlVideoStage'));
+          else if (r.clientJob === 'regen-failed') {
+            const list = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && (nd.data.status === 'error' || nd.data.adapt));
+            await runNodePool(list.filter((nd) => nd.type !== 'video'), 'image', T('tlRetryFailed'));
+            await runNodePool(list.filter((nd) => nd.type === 'video'), 'video', T('tlVideoStage'));
           }
         }
       } catch (e) {
@@ -11422,6 +11430,197 @@ function queueThumb(assetId) {
       }
     }
 
+    let genAimd = null;
+    function defaultGenConcurrency(kind) { return kind === 'video' ? 2 : 4; }
+    function clampGenConcurrency(value, kind) {
+      const n = Number(value);
+      const fallback = defaultGenConcurrency(kind);
+      if (!Number.isFinite(n) || n < 1) return fallback;
+      return Math.max(1, Math.min(8, Math.round(n)));
+    }
+    function providerConcurrency(provider, kind) {
+      const p = provider || {};
+      if (p.concurrency != null && String(p.concurrency).trim() !== '') return clampGenConcurrency(p.concurrency, kind);
+      let extra = p.extra;
+      if (typeof extra === 'string' && extra.trim()) {
+        try { extra = JSON.parse(extra); } catch { extra = null; }
+      }
+      if (extra && typeof extra === 'object') {
+        const n = extra.concurrency || extra.parallel || extra.maxConcurrency;
+        if (n != null && String(n).trim() !== '') return clampGenConcurrency(n, kind);
+      }
+      return defaultGenConcurrency(kind);
+    }
+    function isRateLimitError(err) {
+      const status = Number(err && err.status) || 0;
+      const msg = String((err && err.message) || err || '');
+      return status === 429 || /429|rate limit|too many requests/i.test(msg);
+    }
+    function videoDeps(items) {
+      const list = items || [];
+      return list.map((item, i) => {
+        const prev = i > 0 ? list[i - 1] : null;
+        const chained = !!(item && (item.continued || item.join === 'continuous'));
+        return { id: item.id, waitFor: chained && prev ? prev.id : null, item };
+      });
+    }
+    function createAimd(limit) {
+      const max = Math.max(1, Number(limit) || 1);
+      let current = max;
+      let backoffMs = 1000;
+      let until = 0;
+      let streak = 0;
+      return {
+        limit() { return current; },
+        pauseUntil() { return until; },
+        onRateLimit(now) {
+          current = Math.max(1, Math.floor(current / 2));
+          backoffMs = Math.min(30000, Math.max(1000, backoffMs * 2));
+          until = (now == null ? Date.now() : now) + backoffMs;
+          streak = 0;
+          return { limit: current, backoffMs, pauseUntil: until };
+        },
+        onSuccess() {
+          streak += 1;
+          if (streak >= 2 && current < max) { current += 1; streak = 0; backoffMs = 1000; }
+          return current;
+        },
+      };
+    }
+    async function runGenPool(items, worker, opts) {
+      const options = opts || {};
+      const cap = Math.max(1, Number(options.concurrency) || 4);
+      const aimd = options.aimd || createAimd(cap);
+      const isRate = options.isRateLimit || isRateLimitError;
+      const now = () => (options.now ? options.now() : Date.now());
+      const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+      const signal = options.signal;
+      const onState = options.onState || (() => {});
+      const list = (items || []).map((item, i) => ({
+        id: item && item.id != null ? item.id : String(i),
+        item,
+        waitFor: item && item.waitFor || null,
+        state: 'queued',
+        rateTries: 0,
+      }));
+      const byId = new Map(list.map((t) => [t.id, t]));
+      const results = [];
+      let active = 0;
+      let launching = false;
+      const snapshot = (task) => onState({
+        id: task && task.id, state: task && task.state, active,
+        limit: Math.min(cap, aimd.limit()),
+        done: results.filter((r) => r.ok).length,
+        failed: results.filter((r) => !r.ok).length,
+        total: list.length,
+      });
+      function failDependents(id, error) {
+        for (const t of list) {
+          if (t.waitFor !== id || t.state !== 'queued') continue;
+          t.state = 'failed';
+          results.push({ id: t.id, ok: false, error });
+          snapshot(t);
+          failDependents(t.id, error);
+        }
+      }
+      function readyTasks() {
+        return list.filter((t) => {
+          if (t.state !== 'queued') return false;
+          if (!t.waitFor) return true;
+          const dep = byId.get(t.waitFor);
+          return !!(dep && dep.state === 'done');
+        });
+      }
+      async function launch() {
+        if (launching) return;
+        launching = true;
+        try {
+          while (true) {
+            if (signal && signal.aborted) {
+              for (const t of list) if (t.state === 'queued') { t.state = 'cancelled'; results.push({ id: t.id, ok: false, error: new Error('cancelled') }); snapshot(t); }
+              return;
+            }
+            const limit = Math.min(cap, aimd.limit());
+            if (active >= limit) return;
+            if (aimd.pauseUntil() > now()) {
+              const wait = aimd.pauseUntil() - now();
+              launching = false;
+              await sleep(wait);
+              return launch();
+            }
+            const ready = readyTasks();
+            if (!ready.length) return;
+            const task = ready[0];
+            task.state = 'running';
+            active += 1;
+            snapshot(task);
+            worker(task.item).then(
+              (value) => { task.state = 'done'; results.push({ id: task.id, ok: true, value }); aimd.onSuccess(); },
+              (error) => {
+                if (isRate(error) && task.rateTries < 2 && !(signal && signal.aborted)) {
+                  task.rateTries += 1;
+                  task.state = 'queued';
+                  aimd.onRateLimit(now());
+                  return;
+                }
+                task.state = 'failed';
+                results.push({ id: task.id, ok: false, error });
+                failDependents(task.id, error);
+              },
+            ).finally(() => { active -= 1; snapshot(task); launch(); });
+          }
+        } finally { launching = false; }
+      }
+      if (!list.length) return { results: [], limit: cap };
+      await launch();
+      await new Promise((resolve) => {
+        const tick = () => {
+          if (!list.some((t) => t.state === 'queued' || t.state === 'running')) resolve();
+          else setTimeout(tick, 15);
+        };
+        tick();
+      });
+      return { results, limit: aimd.limit() };
+    }
+    function videoWorkItems(list) {
+      const sorted = (list || []).slice().sort((a, b) => (a.data.mvIndex || 0) - (b.data.mvIndex || 0));
+      const rows = sorted.map((nd) => {
+        const audio = S.graph.nodes[nd.data.mvFrom];
+        const sc = audio && audio.data && audio.data.mvPackage && audio.data.mvPackage.scenes && audio.data.mvPackage.scenes[nd.data.mvIndex];
+        return { id: nd.id, continued: !!(sc && (sc.continued || sc.join === 'continuous')), join: sc && sc.join, node: nd };
+      });
+      return videoDeps(rows).map((d) => ({ id: d.id, waitFor: d.waitFor, node: rows.find((r) => r.id === d.id).node }));
+    }
+    async function runNodePool(list, kind, label) {
+      if (!list || !list.length) return;
+      const settings = loadSettings();
+      const sample = list[0];
+      const cfg = kind === 'video'
+        ? resolveVideoModelCfg(settings, nodeVideoModelRef(sample))
+        : resolveImageModelCfg(settings, nodeImageModelRef(sample));
+      const conc = providerConcurrency(cfg, kind);
+      const ctl = new AbortController();
+      genAbort.ctl = ctl;
+      genAimd = createAimd(conc);
+      const items = kind === 'video'
+        ? videoWorkItems(list)
+        : list.map((nd) => ({ id: nd.id, waitFor: null, node: nd }));
+      update((s) => { s.batchLive = { total: items.length, done: 0, active: 0, failed: 0, label: label || '' }; });
+      try {
+        await runGenPool(items, (item) => runGenNode(item.node), {
+          concurrency: conc,
+          aimd: genAimd,
+          signal: ctl.signal,
+          onState: (snap) => update((s) => {
+            s.batchLive = { total: snap.total, done: snap.done, active: snap.active, failed: snap.failed, label: label || '' };
+            if (snap.id && s.graph.nodes[snap.id]) s.graph.nodes[snap.id].data.queueState = snap.state;
+          }),
+        });
+      } finally {
+        genAimd = null;
+        update((s) => { s.batchLive = null; });
+      }
+    }
     function mvStates(audioId) {
       return Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && nd.data.mvFrom === audioId).map((nd) => ({
         role: nd.data.mvRole || '',
@@ -11533,6 +11732,7 @@ function queueThumb(assetId) {
     async function rememberFailure(nodeId, err, params, roundAuto) {
       const live = S.graph.nodes[nodeId];
       const history = (live && live.data && live.data.attempts) || [];
+      if (isRateLimitError(err) && genAimd) genAimd.onRateLimit();
       let plan = null;
       try {
         const r = await hostRpc('generationPlan', {
@@ -11607,7 +11807,12 @@ function queueThumb(assetId) {
       if (blocked) throw new Error(blocked);
       const settings = loadSettings(); // 模型解析（供应商+模型）用
       const ctl = new AbortController();
-      genAbort.ctl = ctl;
+      const parentAbort = genAbort.ctl;
+      if (parentAbort && parentAbort.signal && !parentAbort.signal.aborted) {
+        parentAbort.signal.addEventListener('abort', () => { try { ctl.abort(); } catch { /* 忽略 */ } }, { once: true });
+      } else {
+        genAbort.ctl = ctl;
+      }
       genActive++;
       // 生成告警收集器：参考素材截断、厂商参数落空等"需要用户知道"的事实，一律挂到节点上（绝不静默）
       const addWarn = (msg) => {
@@ -14121,7 +14326,7 @@ function queueThumb(assetId) {
       const refThumbUrl = useNodeThumb(firstRefAid);
       const running = n.data.status === 'running';
       const done = !!n.data.assetId;
-      const statusLabel = n.data.needRegen ? T('tlNeedRedo') : running ? T('genRunning') : done ? T('generated') : (n.data.status === 'error' ? T('genFailed') : '');
+      const statusLabel = n.data.queueState === 'queued' ? T('tlQueued') : n.data.needRegen ? T('tlNeedRedo') : running ? T('genRunning') : done ? T('generated') : (n.data.status === 'error' ? T('genFailed') : '');
       // 打开面板必须同时选中节点：面板渲染条件是 composerId ∈ S.sel。
       // 视频控件会 stopPropagation（不经过节点根 pointerdown），所以这里自己保证选中。
       const openPanel = () => selectAndOpenComposer(n.id);
@@ -15754,10 +15959,40 @@ function queueThumb(assetId) {
       };
       const genRefsOnly = async () => {
         const list = owned().filter((nd) => (nd.data.mvRole === 'char' || nd.data.mvRole === 'loc') && !nd.data.assetId);
-        for (const nd of list) {
-          try { await runGenNode(nd); } catch { /* 一张设定失败不挡住下一张 */ }
-        }
-        update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = null; });
+        setBusy('gen');
+        try {
+          await runNodePool(list, 'image', T('tlRefStage'));
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = null; });
+        } finally { setBusy(''); }
+      };
+      const runArmed = async () => {
+        const job = (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.batchConfirm) || null;
+        if (!job) return;
+        const ids = new Set(job.ids || []);
+        const list = Object.values(S.graph.nodes || {}).filter((nd) => ids.has(nd.id));
+        update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.batchConfirm = null; });
+        setBusy('gen');
+        try {
+          await runNodePool(list, job.kind === 'videos' ? 'video' : 'image', job.kind === 'videos' ? T('tlVideoStage') : T('tlShotStage'));
+          if (job.thenIds && job.thenIds.length) {
+            update((s) => {
+              const nd = s.graph.nodes[n.id];
+              if (nd) nd.data.batchConfirm = { kind: 'videos', count: job.thenIds.length, ids: job.thenIds };
+            });
+          }
+        } finally { setBusy(''); }
+      };
+      const armBatch = (kind, list, thenList) => {
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (!nd) return;
+          nd.data.batchConfirm = {
+            kind,
+            count: list.length,
+            ids: list.map((nd2) => nd2.id),
+            thenIds: (thenList || []).map((nd2) => nd2.id),
+          };
+        });
       };
       const genAll = async () => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
@@ -15771,29 +16006,20 @@ function queueThumb(assetId) {
           toast(T('tlLockFirst'));
           return;
         }
-        setBusy('gen');
-        try {
-          await runOwned((nd) => nd.data.mvRole === 'shot' && !nd.data.assetId);
-          const videos = owned().filter((nd) => nd.type === 'video' && !nd.data.skipGen).sort((a, b) => (a.data.mvIndex || 0) - (b.data.mvIndex || 0));
-          for (const nd of videos) {
-            try { await runGenNode(nd); } catch { /* 失败的段不挡住后面的段 */ }
-          }
-          const cut = owned().find((nd) => nd.type === 'finalcut');
-          if (cut) {
-            try { await runGenNode(cut); } catch { /* 成片失败单独留下 */ }
-          }
-        } catch (e) {
-          toast(String((e && e.message) || e));
-        } finally { setBusy(''); }
+        const shots = owned().filter((nd) => nd.data.mvRole === 'shot' && !nd.data.assetId);
+        const videos = owned().filter((nd) => nd.type === 'video' && !nd.data.skipGen && !nd.data.assetId).sort((a, b) => (a.data.mvIndex || 0) - (b.data.mvIndex || 0));
+        if (shots.length) { armBatch('shots', shots, videos); return; }
+        if (videos.length) { armBatch('videos', videos); return; }
       };
       const regenFailed = async () => {
         const list = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && (nd.data.status === 'error' || nd.data.adapt));
         if (!list.length) { toast(T('tlRetryFailed')); return; }
+        const images = list.filter((nd) => nd.type !== 'video');
+        const videos = list.filter((nd) => nd.type === 'video');
         setBusy('gen');
         try {
-          for (const nd of list) {
-            try { await runGenNode(nd); } catch { /* 继续下一项 */ }
-          }
+          await runNodePool(images, 'image', T('tlRetryFailed'));
+          await runNodePool(videos, 'video', T('tlVideoStage'));
         } finally { setBusy(''); }
       };
       const regenOne = async () => {
@@ -15814,17 +16040,26 @@ function queueThumb(assetId) {
           return;
         }
         const shotNodes = owned().filter((nd) => nd.data.mvRole === 'shot' && nd.data.mvIndex === index && !nd.data.assetId);
-        for (const nd of shotNodes) {
-          try { await runGenNode(nd); } catch { /* 分镜失败不挡视频检查 */ }
+        const vid = owned().find((nd) => nd.type === 'video' && nd.data && nd.data.mvIndex === index && !nd.data.skipGen && !nd.data.assetId);
+        if (shotNodes.length) { armBatch('shots', shotNodes, vid ? [vid] : []); return; }
+        if (vid) { armBatch('videos', [vid]); return; }
+      };
+      const genRange = async (from) => {
+        if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
+        const stage = refStage();
+        const missing = (stage.characters.total - stage.characters.have) + (stage.locations.total - stage.locations.have);
+        if (missing > 0) {
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = { count: missing, chars: stage.characters.total - stage.characters.have, locs: stage.locations.total - stage.locations.have }; });
+          return;
         }
-        const imgs = owned().filter((nd) => nd.type === 'image' && nd.data && nd.data.mvIndex === index && !String(nd.data.mvKey || '').includes(':src:'));
-        for (const img of imgs) if (!img.data.assetId) {
-          try { await runGenNode(img); } catch { /* 这一张失败不挡住这一段视频 */ }
+        if (stage.characters.locked < stage.characters.total || stage.locations.locked < stage.locations.total) {
+          toast(T('tlLockFirst'));
+          return;
         }
-        const vid = owned().find((nd) => nd.type === 'video' && nd.data && nd.data.mvIndex === index && !nd.data.skipGen);
-        if (vid) {
-          try { await runGenNode(vid); } catch { /* 失败留在节点上 */ }
-        }
+        const shotNodes = owned().filter((nd) => nd.data.mvRole === 'shot' && nd.data.mvIndex >= from && !nd.data.assetId);
+        const videos = owned().filter((nd) => nd.type === 'video' && nd.data.mvIndex >= from && !nd.data.skipGen && !nd.data.assetId);
+        if (shotNodes.length) { armBatch('shots', shotNodes, videos); return; }
+        if (videos.length) { armBatch('videos', videos); return; }
       };
       const regenStale = async () => {
         const videos = owned().filter((nd) => nd.type === 'video' && (nd.data.mvStale || (scenes[nd.data.mvIndex] && scenes[nd.data.mvIndex].gen && scenes[nd.data.mvIndex].gen.stale)));
@@ -16012,6 +16247,14 @@ function queueThumb(assetId) {
         n.data.refConfirm ? h('div', { className: 'dshic-adapt' },
           h('div', null, '将先生成角色 ' + (n.data.refConfirm.chars || 0) + ' 张、场景 ' + (n.data.refConfirm.locs || 0) + ' 张'),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: genRefsOnly }, T('tlAgentConfirm'))) : null,
+        n.data.batchConfirm ? h('div', { className: 'dshic-adapt', 'data-tl-batch-confirm': '1' },
+          h('div', null, n.data.batchConfirm.kind === 'videos'
+            ? ('将生成视频 ' + n.data.batchConfirm.count + ' 段。续帧的段会按顺序，其余同时进行。')
+            : ('将并发生成分镜 ' + n.data.batchConfirm.count + ' 张')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: runArmed }, T('tlAgentConfirm'))) : null,
+        S.batchLive ? h('div', { className: 'dshic-mtl-steps', 'data-tl-batch': '1' },
+          h('span', { className: 'dshic-mtl-step is-on' }, (S.batchLive.label || '') + ' ' + (S.batchLive.done || 0) + '/' + (S.batchLive.total || 0) + '（进行中 ' + (S.batchLive.active || 0) + '）'),
+          h('button', { type: 'button', className: 'dshic-mini', onClick: stopActiveGen }, T('tlCancelAll'))) : null,
         mode === 'create' ? h('div', { className: 'dshic-mtl-steps', 'data-tl-steps': '1' },
           [T('tlStepUpload'), T('tlStepAnalyze'), T('tlStepConfirm'), T('tlStepStyle'), T('tlStepPush')].map((label, i) => {
             const flowIndex = !url ? 0 : !(an && an.sections) ? 1 : !n.data.sectionsConfirmed ? 2 : !pkg ? 3 : 4;
@@ -16077,7 +16320,7 @@ function queueThumb(assetId) {
           n.data.analyzeLocal ? h('button', { type: 'button', className: 'dshic-mini', onClick: () => openStudioModal('settings') }, T('tlOpenSettings')) : null,
           (n.data.sliceManifest && n.data.sliceManifest.length) ? h('button', { type: 'button', className: 'dshic-mini', onClick: exportSlices }, T('tlExportSlices')) : null,
           pkg ? h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => genSceneAt(sceneIndex) }, T('tlGenThis')) : null,
-          pkg ? h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: async () => { for (let i = sceneIndex; i < scenes.length; i++) await genSceneAt(i); } }, T('tlGenToEnd')) : null),
+          pkg ? h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => genRange(sceneIndex) }, T('tlGenToEnd')) : null),
         chrome.showImport ? h('div', { className: 'dshic-mtl-style', 'data-tl-remix': '1' },
           chrome.showCast ? h('input', { 'data-tl-cast': '1', value: castName, onChange: (e) => setCastName(e.target.value), placeholder: T('tlCast') }) : null,
           h('button', {
@@ -21255,6 +21498,7 @@ const DIRECTOR_KEY_HELP = [
                 }, pr.label))) : null,
               h(Field, { key: 'u', label: T('baseUrl'), value: p[urlKey] || '', onChange: (v) => patchProvider(p.id, urlKey, v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).base || urlPh) : urlPh }),
               h(Field, { key: 'k', label: T('apiKey'), value: p.apiKey || '', onChange: (v) => patchProvider(p.id, 'apiKey', v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).keyPh || 'sk-…') : 'sk-…', password: true }),
+              !isAudio ? h(Field, { key: 'conc', label: T('genConcurrency'), value: p.concurrency || '', placeholder: kind === 'video' ? '2' : '4', tip: T('genConcurrencyHint'), onChange: (v) => patchProvider(p.id, 'concurrency', String(v).replace(/[^\d]/g, '')) }) : null,
               isAudio ? h(Field, { key: 'idle', label: T('audioIdle'), value: p.analysisIdleSec || '', placeholder: '90', tip: T('audioIdleHint'), onChange: (v) => patchProvider(p.id, 'analysisIdleSec', String(v).replace(/[^\d]/g, '')) }) : null,
               kind === 'image' ? [
                 h(Field, { key: 'size', label: T('imgSizeOverride'), value: p.size || '', onChange: (v) => patchProvider(p.id, 'size', v), placeholder: T('imgSizePlaceholder') }),
