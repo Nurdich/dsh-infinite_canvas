@@ -35,6 +35,12 @@ import {
   missingSceneRefs,
   reviseShotPrompt,
   confirmShot,
+  planAudioWindows,
+  mergeAudioAnalyses,
+  moveSectionBoundary,
+  splitSectionAt,
+  mergeSectionWithNext,
+  sectionCutReasons,
   groupShotsForClips,
   analysisDigest,
   AUDIO_ANALYSIS_SCHEMA,
@@ -3655,6 +3661,10 @@ function layMusicVideo(doc, audio, pkg) {
       mvFrom: from, mvIndex: si, prompt: '',
       duration: (sc.gen && sc.gen.requestSec) || Math.max(4, Math.round(sc.duration || 5)),
       editDuration: sc.duration,
+      segmentAudioId: sc.audioAssetId || ((() => {
+        const hit = ((audio.data && audio.data.sliceManifest) || []).find((sl) => Math.abs(Number(sl.startSec) - Number(sc.startSec)) < 0.25 && Math.abs(Number(sl.endSec) - Number(sc.endSec)) < 0.25);
+        return hit && hit.assetId;
+      })()) || '',
       resolution: '720P', ratio: '16:9',
       mvFp: fp,
       mvStale: !!(oldAsset && oldFp && oldFp !== fp) || !!(sc.gen && sc.gen.stale),
@@ -4589,6 +4599,24 @@ export function apply(ctx) {
         } catch (e) {
           return { ok: true, description: '', fallback: true, reason: String((e && e.message) || e) };
         }
+      },
+      async audioPlanWindows(args) {
+        return { ok: true, windows: planAudioWindows(args && args.durationSec, args || {}) };
+      },
+      async audioMergeAnalyses(args) {
+        const analysis = mergeAudioAnalyses(args && args.parts, args && args.durationSec);
+        return { ok: true, analysis };
+      },
+      async audioEditSections(args) {
+        const beats = (args && args.beats) || [];
+        let sections = (args && args.sections) || [];
+        const op = String((args && args.op) || '');
+        if (op === 'move') sections = moveSectionBoundary(sections, Number(args.index), args.edge === 'start' ? 'start' : 'end', args.timeSec, beats);
+        else if (op === 'split') sections = splitSectionAt(sections, Number(args.index), args.timeSec, beats);
+        else if (op === 'merge') sections = mergeSectionWithNext(sections, Number(args.index));
+        else if (op === 'reasons') sections = sectionCutReasons(sections, { downbeats: args && args.downbeats, lyrics: args && args.lyrics });
+        else throw new Error('未知的分段操作');
+        return { ok: true, sections };
       },
       async audioPlanStoryboard(args) {
         const a = args && args.analysis;

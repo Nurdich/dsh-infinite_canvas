@@ -1187,6 +1187,25 @@ function revealCanvasInRight() {
       'tlUploadMusic': '上传音乐',
       'tlDropAudio': '或把音频拖到这里',
       'tlNeedAudio': '先上传音乐',
+      'tlNeedAnalyze': '先听歌分析',
+      'tlNeedConfirm': '先确认分段',
+      'tlStartAnalyze': '开始分析',
+      'tlAnalyzing': '正在听',
+      'tlNoProvider': '没有配置音频理解供应商或 Key，已改用本地波形。听不到歌词。',
+      'tlOpenSettings': '打开设置',
+      'tlLocalFallback': '本地波形分析（未走模型）',
+      'tlConfirmSections': '确认分段',
+      'tlSplit': '拆分',
+      'tlMerge': '合并下一段',
+      'tlPlaySlice': '播放本段',
+      'tlExportSlices': '导出切片',
+      'tlGenThis': '生成此段',
+      'tlGenToEnd': '从此段到结尾',
+      'tlStepUpload': '上传音乐',
+      'tlStepAnalyze': 'AI 听歌分析',
+      'tlStepConfirm': '分段确认',
+      'tlStepStyle': '风格与时间轴',
+      'tlStepPush': '推到画布',
       'tlReplaceAudio': '更换歌曲',
       'tlImport': '导入原片',
       'tlKeep': '保留原片',
@@ -2229,6 +2248,25 @@ function revealCanvasInRight() {
       'tlUploadMusic': 'Upload music',
       'tlDropAudio': 'or drop audio here',
       'tlNeedAudio': 'Upload music first',
+      'tlNeedAnalyze': 'Analyze the song first',
+      'tlNeedConfirm': 'Confirm the sections first',
+      'tlStartAnalyze': 'Start analysis',
+      'tlAnalyzing': 'Listening',
+      'tlNoProvider': 'No audio-understanding provider or key. Using a local waveform pass, which cannot hear lyrics.',
+      'tlOpenSettings': 'Open settings',
+      'tlLocalFallback': 'Local waveform analysis (not the model)',
+      'tlConfirmSections': 'Confirm sections',
+      'tlSplit': 'Split',
+      'tlMerge': 'Merge next',
+      'tlPlaySlice': 'Play this slice',
+      'tlExportSlices': 'Export slices',
+      'tlGenThis': 'Generate this',
+      'tlGenToEnd': 'From here to the end',
+      'tlStepUpload': 'Upload',
+      'tlStepAnalyze': 'Analyze',
+      'tlStepConfirm': 'Confirm sections',
+      'tlStepStyle': 'Style and timeline',
+      'tlStepPush': 'Push to canvas',
       'tlReplaceAudio': 'Replace song',
       'tlImport': 'Import source MV',
       'tlKeep': 'Keep original',
@@ -3028,6 +3066,20 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-mtl-upload{height:40px;padding:0 22px;border:0;border-radius:8px;background:#f2f2f2;color:#111;font-size:14px;cursor:pointer;}
 .dshic-mtl-upload:disabled{background:#333;color:#888;cursor:default;}
 .dshic-mtl-empty-hint{font-size:12px;color:#aaa;}
+.dshic-mtl-steps{flex:none;display:flex;gap:4px;padding:6px 8px;background:#121212;border-bottom:1px solid #2a2a2a;overflow:auto;}
+.dshic-mtl-step{flex:none;height:22px;padding:0 8px;border-radius:11px;background:#1a1a1a;color:#888;font-size:11px;line-height:22px;border:1px solid #2a2a2a;}
+.dshic-mtl-step.is-on{background:#f2f2f2;color:#111;border-color:#f2f2f2;}
+.dshic-mtl-step.is-done{color:#ddd;border-color:#3a3a3a;}
+.dshic-mtl-go{height:32px;padding:0 16px;border:0;border-radius:8px;background:#f2f2f2;color:#111;font-size:13px;cursor:pointer;}
+.dshic-mtl-go:disabled{background:#333;color:#888;cursor:default;}
+.dshic-mtl-sec-intro{background:#3a2a55;color:#f3e9ff;}
+.dshic-mtl-sec-verse{background:#1f4d32;color:#e7fff2;}
+.dshic-mtl-sec-chorus{background:#6a2348;color:#ffe8f2;}
+.dshic-mtl-sec-bridge{background:#4a3d12;color:#fff4d6;}
+.dshic-mtl-sec-outro{background:#5a2a2a;color:#ffe8e8;}
+.dshic-mtl-sec-other{background:#2a2a2a;color:#eee;}
+.dshic-mtl-beat{position:absolute;top:0;width:1px;height:6px;background:#666;}
+.dshic-mtl-beat.is-down{height:12px;background:#ddd;}
 .dshic-mtl-preview img,.dshic-mtl-preview video{width:100%;height:100%;object-fit:contain;background:#000;}
 .dshic-mtl-caption{max-width:78%;text-align:center;font-size:13px;line-height:1.55;color:#d5d5d5;letter-spacing:.04em;}
 .dshic-mtl-caption.is-plain{letter-spacing:0;color:#fff;}
@@ -9907,7 +9959,7 @@ function queueThumb(assetId) {
       try {
         // 设定集只在本地确实变化时才带上：否则会把对话侧刚改的版本覆盖回去
         const bibleField = bibleFieldForPush(S.activeId);
-        hostRpc('projectsPut', {
+        return hostRpc('projectsPut', {
           id: S.activeId, name: (proj && proj.name) || S.activeId,
           // 画布 id 与画布清单：Host 据此把图写到对应画布文档并维护项目级画布登记
           canvasId: cid,
@@ -10844,49 +10896,32 @@ function queueThumb(assetId) {
       return src;
     }
     /** 音频节点：解码 → 压成可上传的 WAV → 宿主调全模态模型；没配供应商则本地节拍。 */
-    async function genAudioNode(n) {
-      if (!n.data.assetId) throw new Error(T('audioNeedFile'));
-      const blob = await assetBlob(n.data.assetId);
-      if (!blob || !blob.size) throw new Error(T('audioNeedFile'));
-      const settings = loadSettings();
-      const cfg = resolveAudioModelCfg(settings, n.data.audioModel || '');
-      let durationSec = 0;
-      let energy = [];
-      let hopSec = 0.25;
-      let audioBase64 = '';
-      let format = 'wav';
-      let truncated = false;
+    async function probeSongBlob(blob) {
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (AC) {
-        const ac = new AC();
-        try {
-          const buf = await ac.decodeAudioData(await blob.arrayBuffer());
-          durationSec = buf.duration || 0;
-          const budget = pcmBudget(durationSec);
-          const ds = downsampleMono(buf, budget.sampleRate, budget.sendSec || durationSec);
-          const wav = pcmToWavBlob(ds.samples, ds.sampleRate);
-          audioBase64 = arrayBufferToBase64(await wav.arrayBuffer());
-          truncated = budget.truncated;
-          const curve = rmsEnergy(buf, 0.25);
-          energy = curve.energy;
-          hopSec = curve.hopSec;
-        } catch {
-          audioBase64 = '';
-        } finally { try { ac.close(); } catch { /* 忽略 */ } }
-      }
-      if (!audioBase64 && blob.size < 7200000 && cfg) {
-        audioBase64 = arrayBufferToBase64(await blob.arrayBuffer());
-        format = /wav/i.test(blob.type || '') ? 'wav' : /aac|mp4/i.test(blob.type || '') ? 'aac' : 'mp3';
-      }
-      const payload = {
-        provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' } : null,
-        audioBase64: cfg ? audioBase64 : '',
-        format,
-        durationSec,
-        energy,
-        hopSec,
-        truncated,
+      if (!AC || !blob) return null;
+      const ac = new AC();
+      try {
+        const buf = await ac.decodeAudioData(await blob.arrayBuffer());
+        const curve = rmsEnergy(buf, 0.25);
+        return { durationSec: buf.duration || 0, peaks: (curve.energy || []).slice(0, 240) };
+      } catch { return null; }
+      finally { try { ac.close(); } catch { /* 忽略 */ } }
+    }
+    function sliceBufferView(buf, startSec, endSec) {
+      const sr = buf.sampleRate;
+      const a = Math.max(0, Math.floor(startSec * sr));
+      const b = Math.min(buf.length, Math.ceil(endSec * sr));
+      const chans = [];
+      for (let c = 0; c < (buf.numberOfChannels || 1); c++) chans.push(buf.getChannelData(c).subarray(a, b));
+      return {
+        sampleRate: sr,
+        numberOfChannels: buf.numberOfChannels || 1,
+        length: Math.max(1, b - a),
+        duration: Math.max(0.05, (b - a) / sr),
+        getChannelData: (c) => chans[c] || chans[0],
       };
+    }
+    async function postAudioUnderstand(payload) {
       const res = await fetch('/' + NS + '/api/audio-understand', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -10898,19 +10933,69 @@ function queueThumb(assetId) {
       if (!res.ok || !body || body.error || !body.analysis) {
         throw new Error((body && body.error) || (T('audioAnalyzeFail') + ' HTTP ' + res.status));
       }
+      return body.analysis;
+    }
+    async function genAudioNode(n) {
+      if (!n.data.assetId) throw new Error(T('audioNeedFile'));
+      const blob = await assetBlob(n.data.assetId);
+      if (!blob || !blob.size) throw new Error(T('audioNeedFile'));
+      const settings = loadSettings();
+      const cfg = resolveAudioModelCfg(settings, n.data.audioModel || '');
+      let durationSec = 0;
+      let energy = [];
+      let analysis = null;
+      const noteLocal = !cfg;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error(T('audioAnalyzeFail'));
+      const ac = new AC();
+      try {
+        const buf = await ac.decodeAudioData(await blob.arrayBuffer());
+        durationSec = buf.duration || 0;
+        const curve = rmsEnergy(buf, 0.25);
+        energy = curve.energy;
+        if (!cfg) {
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.analyzeProgress = T('tlLocalFallback'); });
+          analysis = await postAudioUnderstand({
+            provider: null, audioBase64: '', format: 'wav', durationSec, energy, hopSec: curve.hopSec, truncated: false,
+          });
+        } else {
+          const planned = await hostRpc('audioPlanWindows', { durationSec, sampleRate: 16000 });
+          const windows = (planned && planned.windows && planned.windows.length) ? planned.windows : [{ startSec: 0, endSec: durationSec, offsetSec: 0 }];
+          const parts = [];
+          for (let i = 0; i < windows.length; i++) {
+            const w = windows[i];
+            update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.analyzeProgress = T('tlAnalyzing') + ' ' + (i + 1) + '/' + windows.length; });
+            const view = sliceBufferView(buf, w.startSec, w.endSec);
+            const ds = downsampleMono(view, 16000, view.duration);
+            const wav = pcmToWavBlob(ds.samples, ds.sampleRate);
+            const audioBase64 = arrayBufferToBase64(await wav.arrayBuffer());
+            const piece = await postAudioUnderstand({
+              provider: { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' },
+              audioBase64, format: 'wav', durationSec: view.duration, energy: [], hopSec: 0.25, truncated: false,
+            });
+            parts.push({ offsetSec: w.offsetSec || w.startSec || 0, analysis: piece });
+          }
+          const merged = windows.length === 1 ? { analysis: parts[0].analysis } : await hostRpc('audioMergeAnalyses', { parts, durationSec });
+          analysis = (merged && merged.analysis) || parts[0].analysis;
+        }
+      } finally { try { ac.close(); } catch { /* 忽略 */ } }
+      if (!analysis) throw new Error(T('audioAnalyzeFail'));
       update((s) => {
         const nd = s.graph.nodes[n.id];
         if (nd) {
-          nd.data.analysis = body.analysis;
+          nd.data.analysis = analysis;
           nd.data.status = 'done';
           nd.data.error = null;
-          nd.data.durationSec = body.analysis.durationSec || durationSec || null;
+          nd.data.analyzeProgress = '';
+          nd.data.analyzeLocal = noteLocal || analysis.method !== 'model';
+          nd.data.sectionsConfirmed = false;
+          nd.data.durationSec = durationSec || analysis.durationSec || null;
           if (energy && energy.length) nd.data.peaks = energy.slice(0, 240);
         }
         s.assetsTick++;
       });
       flushSave();
-      return body.analysis;
+      return analysis;
     }
     /** 分镜节点：剧本 → 镜头列表（含一致性检查）。连了音频分析时改为按拍点铺 MV 分镜。 */
     async function genStoryboardNode(n) {
@@ -11176,6 +11261,12 @@ function queueThumb(assetId) {
           if (!cases.length) throw new Error(T('noResult'));
         } else {
           const { refs, entities, audioBlobs } = await collectRefs(n, prompt, bible);
+          if (n.data && n.data.segmentAudioId) {
+            try {
+              const segBlob = await assetBlob(n.data.segmentAudioId);
+              if (segBlob) audioBlobs.unshift({ blob: segBlob, name: 'segment-audio', assetId: n.data.segmentAudioId });
+            } catch { /* 切片读不到就不附带，画面生成仍可进行 */ }
+          }
           // 上游是分镜表 → 走厂商「参考生成」结构化提示词（主体/分镜/台词/声音显式绑定，音画同步；
           // 机械拼装会让模型把台词与场景判错）；节点上已手写结构化提示词则原样尊重。
           const sbUp = storyboardInputOf(n);
@@ -14699,6 +14790,21 @@ function queueThumb(assetId) {
       ];
     }
 
+    function readAudioDuration(src) {
+      const o = src || {};
+      for (const v of [o.decodedSec, o.metadataSec, o.storedSec]) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0.05) return Math.round(n * 1000) / 1000;
+      }
+      return 0;
+    }
+    function timelineLanePx(durationSec, viewWidth, zoom) {
+      const view = Math.max(280, Number(viewWidth) || 280);
+      const z = Number(zoom) > 0 ? Number(zoom) : 1;
+      const d = Number(durationSec) || 0;
+      if (!(d > 0)) return view;
+      return Math.max(view, Math.round(d * 8 * z));
+    }
     /** 音乐时间轴空态 / 模式。创作不出现导入原片；没有歌曲时生成时间轴保持关闭。 */
     function musicTimelineChrome(input) {
       const o = input || {};
@@ -14706,6 +14812,12 @@ function queueThumb(assetId) {
       const busy = !!o.busy;
       const mode = o.mode === 'remix' ? 'remix' : 'create';
       const needAudio = mode === 'create' && !hasAudio;
+      const hasAnalysis = !!o.hasAnalysis;
+      const confirmed = !!o.confirmed;
+      let generateHint = '';
+      if (needAudio) generateHint = 'need-audio';
+      else if (mode === 'create' && !hasAnalysis) generateHint = 'need-analyze';
+      else if (mode === 'create' && !confirmed) generateHint = 'need-confirm';
       return {
         mode,
         uploadDisabled: busy,
@@ -14713,8 +14825,8 @@ function queueThumb(assetId) {
         showImport: mode === 'remix',
         showCast: mode === 'remix',
         showReplace: hasAudio,
-        generateDisabled: busy || needAudio,
-        generateHint: needAudio ? 'need-audio' : '',
+        generateDisabled: busy || !!generateHint,
+        generateHint,
       };
     }
     function fmtClock(sec) {
@@ -14780,7 +14892,11 @@ function queueThumb(assetId) {
       const pkg = n.data.mvPackage;
       const an = n.data.analysis;
       const scenes = (pkg && pkg.scenes) || [];
-      const dur = (pkg && pkg.durationSec) || (an && an.durationSec) || n.data.durationSec || 0;
+      const dur = readAudioDuration({
+        decodedSec: n.data.durationSec,
+        metadataSec: n.data.metaDurationSec,
+        storedSec: (pkg && pkg.durationSec) || (an && an.durationSec),
+      });
       const [time, setTime] = useState(0);
       const [playing, setPlaying] = useState(false);
       const [zoom, setZoom] = useState(1);
@@ -14791,7 +14907,20 @@ function queueThumb(assetId) {
       const [castName, setCastName] = useState('');
       const [tab, setTab] = useState('overview');
       const [mode, setMode] = useState('create');
-      const chrome = musicTimelineChrome({ hasAudio: !!url, busy: !!busy, mode });
+      const [viewW, setViewW] = useState(640);
+      const scrollRef = useRef(null);
+      const chrome = musicTimelineChrome({
+        hasAudio: !!url, busy: !!busy, mode,
+        hasAnalysis: !!(an && an.sections && an.sections.length),
+        confirmed: !!(n.data && n.data.sectionsConfirmed),
+      });
+      useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return undefined;
+        const w = el.clientWidth || 0;
+        if (w > 80) setViewW(w);
+        return undefined;
+      }, [url, dur, tab, mode]);
       const audioRef = useRef(null);
       const fileRef = useRef(null);
       const vidFileRef = useRef(null);
@@ -14820,7 +14949,7 @@ function queueThumb(assetId) {
       const caption = lyric && lyric.text
         ? lyric.text
         : (shot && (shot.visual || shot.title)) || (an && an.summary) || '';
-      const px = Math.max(48, dur * 8 * zoom);
+      const px = timelineLanePx(dur, viewW, zoom);
       const seek = (t) => {
         const el = audioRef.current;
         const next = Math.max(0, Math.min(dur || 0, t));
@@ -14891,10 +15020,22 @@ function queueThumb(assetId) {
           nd.data.label = f.name.replace(/\.[a-z0-9]+$/i, '') || nd.data.label;
           nd.data.analysis = null;
           nd.data.mvPackage = null;
+          nd.data.sectionsConfirmed = false;
+          nd.data.sliceManifest = [];
           nd.data.status = 'idle';
           nd.data.error = null;
         });
         flushSave();
+        const probed = await probeSongBlob(f);
+        if (probed && probed.durationSec > 0) {
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (!nd) return;
+            nd.data.durationSec = probed.durationSec;
+            if (probed.peaks && probed.peaks.length) nd.data.peaks = probed.peaks;
+          });
+          flushSave();
+        }
       };
       const onAudioFile = async (e) => {
         const f = e.target.files && e.target.files[0];
@@ -14913,10 +15054,17 @@ function queueThumb(assetId) {
           toast(T('tlNeedAudio'));
           return;
         }
+        if (!(liveNode.data.analysis && liveNode.data.analysis.sections)) {
+          toast(T('tlNeedAnalyze'));
+          return;
+        }
+        if (mode === 'create' && !liveNode.data.sectionsConfirmed) {
+          toast(T('tlNeedConfirm'));
+          return;
+        }
         setBusy('build');
         try {
-          let analysis = n.data.analysis;
-          if (!analysis) analysis = await genAudioNode({ ...n, data: { ...n.data, ...(S.graph.nodes[n.id] && S.graph.nodes[n.id].data) } });
+          const analysis = liveNode.data.analysis;
           const live = S.graph.nodes[n.id];
           const style = (live && live.data && live.data.styleText) || '';
           let allowedDurations;
@@ -14931,15 +15079,125 @@ function queueThumb(assetId) {
             analysis: (live && live.data && live.data.analysis) || analysis,
             ...(allowedDurations ? { allowedDurations } : {}),
           });
-          if (r && r.package) applyPkg(r.package);
+          if (r && r.package) {
+            applyPkg(r.package);
+            await cutSlices(r.package.scenes || [], 'scene');
+          }
         } catch (e) {
           toast(String((e && e.message) || e));
         } finally { setBusy(''); }
       };
+      const startAnalyze = async () => {
+        const liveNode = S.graph.nodes[n.id];
+        if (!(liveNode && liveNode.data && liveNode.data.assetId)) { toast(T('tlNeedAudio')); return; }
+        const cfg = resolveAudioModelCfg(loadSettings(), (liveNode.data && liveNode.data.audioModel) || '');
+        if (!cfg) toast(T('tlNoProvider'));
+        setBusy('analyze');
+        try {
+          await genAudioNode(liveNode);
+        } catch (e) {
+          const msg = String((e && e.message) || e);
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.error = msg; nd.data.analyzeProgress = ''; } });
+          toast(msg);
+        } finally { setBusy(''); }
+      };
+      const editSections = async (op, extra) => {
+        const liveNode = S.graph.nodes[n.id];
+        const analysis = liveNode && liveNode.data && liveNode.data.analysis;
+        if (!analysis) return;
+        setBusy('sections');
+        try {
+          const r = await hostRpc('audioEditSections', {
+            sections: analysis.sections, beats: analysis.beats, downbeats: analysis.downbeats, lyrics: analysis.lyrics, op, ...(extra || {}),
+          });
+          if (r && r.sections) {
+            update((s) => {
+              const nd = s.graph.nodes[n.id];
+              if (!nd || !nd.data.analysis) return;
+              nd.data.analysis.sections = r.sections;
+              nd.data.sectionsConfirmed = false;
+            });
+          }
+        } catch (e) { toast(String((e && e.message) || e)); }
+        finally { setBusy(''); }
+      };
+      const cutSlices = async (list, kind) => {
+        const liveNode = S.graph.nodes[n.id];
+        const blob = liveNode && liveNode.data && liveNode.data.assetId ? await assetBlob(liveNode.data.assetId).catch(() => null) : null;
+        if (!blob) return [];
+        const made = [];
+        for (const sec of list || []) {
+          const start = Number(sec.startSec) || 0;
+          const end = Number(sec.endSec) || 0;
+          if (!(end > start + 0.05)) continue;
+          try {
+            const wav = await extractWavRanges(blob, [[start, end]]);
+            const rec = await saveAssetRecord(S.activeId, 'audio', wav.blob, {
+              name: (kind === 'scene' ? '场' : '段') + ' ' + start.toFixed(1) + '-' + end.toFixed(1),
+              source: 'slice', category: 'audio',
+            });
+            made.push({
+              id: sec.id || '', label: sec.label || sec.title || '', startSec: start, endSec: end,
+              duration: Math.round((end - start) * 1000) / 1000, assetId: rec && rec.id, cutReason: sec.cutReason || '', kind,
+            });
+          } catch { /* 单段失败留在清单外，不阻断其余 */ }
+        }
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (!nd) return;
+          const prev = Array.isArray(nd.data.sliceManifest) ? nd.data.sliceManifest.filter((x) => x.kind !== kind) : [];
+          nd.data.sliceManifest = prev.concat(made);
+          if (kind === 'scene' && nd.data.mvPackage && Array.isArray(nd.data.mvPackage.scenes)) {
+            nd.data.mvPackage.scenes.forEach((sc) => {
+              const hit = made.find((sl) => Math.abs(sl.startSec - Number(sc.startSec)) < 0.25 && Math.abs(sl.endSec - Number(sc.endSec)) < 0.25);
+              if (hit) sc.audioAssetId = hit.assetId;
+            });
+          }
+          if (kind === 'section' && nd.data.analysis && Array.isArray(nd.data.analysis.sections)) {
+            nd.data.analysis.sections.forEach((sc) => {
+              const hit = made.find((sl) => Math.abs(sl.startSec - Number(sc.startSec)) < 0.25 && Math.abs(sl.endSec - Number(sc.endSec)) < 0.25);
+              if (hit) sc.audioAssetId = hit.assetId;
+            });
+          }
+        });
+        flushSave();
+        return made;
+      };
+      const confirmSections = async () => {
+        await editSections('reasons');
+        const liveNode = S.graph.nodes[n.id];
+        const sections = liveNode && liveNode.data && liveNode.data.analysis && liveNode.data.analysis.sections;
+        await cutSlices(sections || [], 'section');
+        update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.sectionsConfirmed = true; });
+        flushSave();
+      };
+      const playRange = (start, end) => {
+        const el = audioRef.current;
+        if (!el) return;
+        el.currentTime = Math.max(0, start || 0);
+        const stop = () => { if (el.currentTime >= (end || 0) - 0.05) { el.pause(); el.removeEventListener('timeupdate', stop); } };
+        el.addEventListener('timeupdate', stop);
+        el.play().catch(() => {});
+        setPlaying(true);
+      };
+      const exportSlices = () => {
+        const liveNode = S.graph.nodes[n.id];
+        const man = (liveNode && liveNode.data && liveNode.data.sliceManifest) || [];
+        const blob = new Blob([JSON.stringify({
+          title: (liveNode && liveNode.data && liveNode.data.label) || '',
+          durationSec: (liveNode && liveNode.data && liveNode.data.durationSec) || 0,
+          slices: man,
+        }, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'mv-slices.json';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+      };
       const pushCanvas = async () => {
         setBusy('push');
         try {
-          flushSave();
+          await flushSave();
           await hostRpc('audioProduceMusicVideo', {
             projectId: S.activeId, nodeId: n.id, keepPackage: true,
             style: (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.styleText) || '',
@@ -14973,6 +15231,13 @@ function queueThumb(assetId) {
         const vid = owned().find((nd) => nd.type === 'video' && nd.data.mvIndex === sceneIndex);
         if (!vid) { toast(T('tlPush')); return; }
         await runGenNode(vid);
+      };
+      const genSceneAt = async (index) => {
+        if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
+        const imgs = owned().filter((nd) => nd.type === 'image' && nd.data && nd.data.mvIndex === index && !String(nd.data.mvKey || '').includes(':src:'));
+        for (const img of imgs) if (!img.data.assetId) await runGenNode(img);
+        const vid = owned().find((nd) => nd.type === 'video' && nd.data && nd.data.mvIndex === index && !nd.data.skipGen);
+        if (vid) await runGenNode(vid);
       };
       const regenStale = async () => {
         const videos = owned().filter((nd) => nd.type === 'video' && (nd.data.mvStale || (scenes[nd.data.mvIndex] && scenes[nd.data.mvIndex].gen && scenes[nd.data.mvIndex].gen.stale)));
@@ -15117,7 +15382,19 @@ function queueThumb(assetId) {
         h('div', { className: 'dshic-mtl-modes' },
           h('button', { type: 'button', className: mode === 'create' ? 'is-on' : '', 'data-tl-mode-create': '1', onClick: () => setMode('create') }, T('tlModeCreate')),
           h('button', { type: 'button', className: mode === 'remix' ? 'is-on' : '', 'data-tl-mode-remix': '1', onClick: () => setMode('remix') }, T('tlModeRemix'))),
-        url ? h('audio', { ref: audioRef, src: url, preload: 'metadata' }) : null,
+        url ? h('audio', {
+          ref: audioRef, src: url, preload: 'metadata',
+          onLoadedMetadata: (e) => {
+            const d = e.target && e.target.duration;
+            if (!(d > 0) || !isFinite(d)) return;
+            update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.metaDurationSec = d; });
+          },
+        }) : null,
+        mode === 'create' ? h('div', { className: 'dshic-mtl-steps', 'data-tl-steps': '1' },
+          [T('tlStepUpload'), T('tlStepAnalyze'), T('tlStepConfirm'), T('tlStepStyle'), T('tlStepPush')].map((label, i) => {
+            const flowIndex = !url ? 0 : !(an && an.sections) ? 1 : !n.data.sectionsConfirmed ? 2 : !pkg ? 3 : 4;
+            return h('span', { key: label, className: 'dshic-mtl-step' + (i === flowIndex ? ' is-on' : '') + (i < flowIndex ? ' is-done' : '') }, (i + 1) + ' ' + label);
+          })) : null,
         h('div', { className: 'dshic-mtl-preview' + filterCls },
           chrome.showEmpty
             ? h('div', { className: 'dshic-mtl-empty', 'data-tl-empty': '1', onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); }, onDrop: onDropAudio },
@@ -15163,17 +15440,33 @@ function queueThumb(assetId) {
           h('button', {
             type: 'button', className: 'dshic-mini', 'data-tl-generate': '1',
             disabled: chrome.generateDisabled,
-            title: chrome.generateHint === 'need-audio' ? T('tlNeedAudio') : T('tlGenerate'),
+            title: chrome.generateHint === 'need-audio' ? T('tlNeedAudio') : chrome.generateHint === 'need-analyze' ? T('tlNeedAnalyze') : chrome.generateHint === 'need-confirm' ? T('tlNeedConfirm') : T('tlGenerate'),
             onClick: buildTimeline,
           }, busy === 'build' ? '…' : T('tlGenerate')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: pushCanvas }, T('tlPush')),
-          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: genAll }, T('tlGenAll'))),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: genAll }, T('tlGenAll')),
+          mode === 'create' && url && !(an && an.sections) ? h('button', {
+            type: 'button', className: 'dshic-mtl-go', 'data-tl-analyze': '1', disabled: !!busy, onClick: startAnalyze,
+          }, busy === 'analyze' ? (n.data.analyzeProgress || T('tlAnalyzing')) : T('tlStartAnalyze')) : null,
+          mode === 'create' && an && an.sections && !n.data.sectionsConfirmed ? h('button', {
+            type: 'button', className: 'dshic-mtl-go', 'data-tl-confirm': '1', disabled: !!busy, onClick: confirmSections,
+          }, T('tlConfirmSections')) : null,
+          n.data.analyzeLocal ? h('button', { type: 'button', className: 'dshic-mini', onClick: () => openStudioModal('settings') }, T('tlOpenSettings')) : null,
+          (n.data.sliceManifest && n.data.sliceManifest.length) ? h('button', { type: 'button', className: 'dshic-mini', onClick: exportSlices }, T('tlExportSlices')) : null,
+          pkg ? h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => genSceneAt(sceneIndex) }, T('tlGenThis')) : null,
+          pkg ? h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: async () => { for (let i = sceneIndex; i < scenes.length; i++) await genSceneAt(i); } }, T('tlGenToEnd')) : null),
         chrome.showImport ? h('div', { className: 'dshic-mtl-style', 'data-tl-remix': '1' },
           chrome.showCast ? h('input', { 'data-tl-cast': '1', value: castName, onChange: (e) => setCastName(e.target.value), placeholder: T('tlCast') }) : null,
           h('button', {
             type: 'button', className: 'dshic-mini', 'data-tl-import': '1', disabled: !!busy,
             onClick: () => { const el = vidFileRef.current; if (el) el.click(); },
           }, busy === 'remix' ? '…' : T('tlImport'))) : null,
+        an && an.sections && an.sections[sel] ? h('div', { className: 'dshic-mtl-style' },
+          h('span', null, an.sections[sel].cutReason || an.sections[sel].label || ''),
+          h('button', { type: 'button', className: 'dshic-mini', onClick: () => playRange(an.sections[sel].startSec, an.sections[sel].endSec) }, T('tlPlaySlice')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => editSections('split', { index: sel, timeSec: (Number(an.sections[sel].startSec) + Number(an.sections[sel].endSec)) / 2 }) }, T('tlSplit')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => editSections('merge', { index: sel }) }, T('tlMerge'))) : null,
+        n.data.error ? h('div', { className: 'dshic-err' }, n.data.error) : null,
         scene ? h('div', { className: 'dshic-mtl-inspector' },
           h('span', null, T('tlStory')),
           h('textarea', { rows: 2, value: (shot && shot.visual) || '', onBlur: (e) => patchShot({ visual: e.target.value }) }),
@@ -15257,18 +15550,45 @@ function queueThumb(assetId) {
               : ((pkg && pkg.locations && pkg.locations.length)
                 ? pkg.locations.map((loc) => (loc.name || '') + ' · ' + T('tlMain') + (loc.hasMain ? ' ✓' : ' · ' + T('tlBlocked')) + ' · ' + T('tlViews') + (loc.hasMultiView ? ' ✓' : '') + '\n' + (loc.mainPrompt || '')).join('\n\n')
                 : T('tlNoPlace')))
-          : h('div', { className: 'dshic-mtl-scroll' },
+          : h('div', { className: 'dshic-mtl-scroll', ref: scrollRef },
           h('div', { style: { width: px + 22, position: 'relative' } },
-            h('div', { className: 'dshic-mtl-ruler', style: { marginLeft: 22, width: px, position: 'relative' } }, marks),
-            h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '✦'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, ((pkg && pkg.sections && pkg.sections.length) ? pkg.sections : scenes).map((sc, i) => (pkg && pkg.sections && pkg.sections.length)
-              ? h('div', {
-                key: 'sec' + i, className: 'dshic-mtl-block is-ai',
-                style: { left: dur ? (sc.startSec / dur) * px : 0, width: Math.max(8, dur ? ((sc.endSec - sc.startSec) / dur) * px : 8) },
-                title: sc.line || '',
+            h('div', { className: 'dshic-mtl-ruler', style: { marginLeft: 22, width: px, position: 'relative' } },
+              marks,
+              dur > 0 ? (an && an.beats || []).filter((_, i) => i % 2 === 0).map((t, i) => h('i', {
+                key: 'bt' + i,
+                className: 'dshic-mtl-beat' + ((an.downbeats || []).some((d) => Math.abs(d - t) < 0.05) ? ' is-down' : ''),
+                style: { left: (t / dur) * px },
+              })) : null),
+            h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '✦'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, ((an && an.sections && an.sections.length) ? an.sections : ((pkg && pkg.sections) || [])).map((sc, i) => {
+              const labelName = sc.label || sc.line || sc.title || '';
+              const toneClass = /intro/.test(sc.label || '') ? 'dshic-mtl-sec-intro'
+                : /chorus/.test(sc.label || '') ? 'dshic-mtl-sec-chorus'
+                : /verse|pre-chorus/.test(sc.label || '') ? 'dshic-mtl-sec-verse'
+                : /bridge|breakdown/.test(sc.label || '') ? 'dshic-mtl-sec-bridge'
+                : /outro/.test(sc.label || '') ? 'dshic-mtl-sec-outro'
+                : 'dshic-mtl-sec-other';
+              return h('div', {
+                key: 'sec' + i,
+                className: 'dshic-mtl-block ' + toneClass + (i === sel ? ' is-on' : ''),
+                style: { left: dur ? (sc.startSec / dur) * px : 0, width: Math.max(18, dur ? ((sc.endSec - sc.startSec) / dur) * px : 18) },
+                title: (sc.cutReason || sc.line || labelName),
                 onPointerDown: (e) => e.stopPropagation(),
-                onClick: () => seek(sc.startSec),
-              }, sc.line || sc.label || '')
-              : block(sc, i, 'ai')))),
+                onClick: () => { setSel(i); seek(sc.startSec || 0); },
+              }, (sc.cutReason ? sc.cutReason + ' · ' : '') + labelName, an && an.sections ? h('span', {
+                className: 'dshic-mtl-resize',
+                onPointerDown: (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  const startX = e.clientX;
+                  const up = (ev) => {
+                    window.removeEventListener('pointerup', up);
+                    const delta = (ev.clientX - startX) / (px / Math.max(0.001, dur || 1));
+                    editSections('move', { index: i, edge: 'end', timeSec: (sc.endSec || 0) + delta });
+                  };
+                  window.addEventListener('pointerup', up);
+                },
+              }) : null);
+            }))),
             h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '♪'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, bars)),
             h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, 'T'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, (((pkg && pkg.subtitleTrack && pkg.subtitleTrack.length) ? pkg.subtitleTrack : ((an && an.lyrics) || []))).map((l, i) => h('div', {
               key: 'ly' + i, className: 'dshic-mtl-block is-lyric',

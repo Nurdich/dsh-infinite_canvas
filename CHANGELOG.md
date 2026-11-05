@@ -16,6 +16,7 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 ### Fixed
 - **Audio assets can be placed on the canvas.** Import and batch-add used to skip every audio file. They now become audio nodes.
 - **An empty music-timeline node can take a song.** The upload control is no longer disabled when there is no audio yet. The preview shows an upload button and accepts a dropped audio file. Create and remake are separate modes: create is the default and hides source-MV import until the user switches to remake. Generate timeline stays disabled, with a hint, until a song is uploaded.
+- **Uploading a song now records its real duration and waveform.** The timeline lane stays at least as wide as the node instead of collapsing to a short stub when the duration has not been stored yet. Create mode is a five-step flow: upload, analyze, confirm sections, style and timeline, then push or generate per segment. Long songs are heard in overlapping windows that fit the base64 limit and merged back. Each confirmed section and each scene can be sliced to its own WAV. A missing audio-understanding provider is labeled and falls back to the local waveform.
 
 ### Changed
 - **Icon rail order** inserts 音频 between 视频 and 成片. UI rule 12 and the panel-layout gate match the new order.

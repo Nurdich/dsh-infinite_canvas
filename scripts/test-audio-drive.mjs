@@ -267,6 +267,33 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(!/各只出现一人/.test(bare.scenes[0].shots[0].videoPrompt), '没有角色却写了人数锁');
 }
 
+{
+  ok(AD.readAudioDuration({ decodedSec: 0, metadataSec: 245.2, storedSec: 0 }) === 245.2, '上传后的时长应读到解码或 metadata');
+  ok(AD.readAudioDuration({}) === 0, '没有时长时不能编一个数');
+  ok(AD.timelineLanePx(0, 800, 1) >= 800, '没有时长时轨道不能缩成短条');
+  ok(AD.timelineLanePx(240, 800, 1) >= 240 * 8, '有时长时轨道要盖住整首歌');
+  const flow = AD.mvCreateFlow({});
+  ok(flow.current === 'upload' && flow.steps.length === 5, '流程应从上传开始');
+  ok(AD.mvCreateFlow({ hasAudio: true }).current === 'analyze', '有歌后应进入听歌');
+  ok(AD.mvCreateFlow({ hasAudio: true, hasAnalysis: true }).current === 'confirm', '听完应停在确认分段');
+  ok(AD.mvCreateFlow({ hasAudio: true, hasAnalysis: true, confirmed: true }).current === 'style', '确认后才写风格');
+  ok(AD.mvCreateFlow({ hasAudio: true, hasAnalysis: true, confirmed: true, hasPackage: true }).current === 'push', '有时间轴后才是推到画布');
+  const windows = AD.planAudioWindows(400, { sampleRate: 16000, base64Limit: 9500000, overlapSec: 2 });
+  ok(windows.length > 1 && windows[0].startSec === 0 && windows[windows.length - 1].endSec === 400, '长歌应切成覆盖全长的窗口：' + JSON.stringify(windows.map((w) => w.endSec)));
+  ok(windows.every((w, i) => i === 0 || w.startSec < windows[i - 1].endSec), '窗口之间应该重叠');
+  ok(AD.snapSectionBoundary(10.2, [8, 10, 12], 0.35) === 10, '段落边界应吸到最近的拍');
+  ok(AD.snapSectionBoundary(10.9, [8, 10], 0.35) === 10.9, '离拍太远不应被吸走');
+  const moved = AD.moveSectionBoundary([{ startSec: 0, endSec: 10, label: 'verse' }, { startSec: 10, endSec: 20, label: 'chorus' }], 0, 'end', 12.1, [8, 12, 16]);
+  ok(moved[0].endSec === 12 && moved[1].startSec === 12, '拖边界应同时改相邻段');
+  const slices = AD.sectionsToSlices([{ startSec: 0, endSec: 10 }, { startSec: 10, endSec: 25 }, { startSec: 25, endSec: 40.5 }]);
+  ok(Math.abs(AD.sliceDurationSum(slices) - 40.5) < 0.001, '切片时长加总应等于整首');
+  const reasons = AD.sectionCutReasons([
+    { label: 'intro', startSec: 0, endSec: 8, energy: 0.2 },
+    { label: 'chorus', startSec: 8, endSec: 16, energy: 0.8 },
+  ], { downbeats: [8], lyrics: [{ startSec: 8.1, endSec: 10, text: '一句' }] });
+  ok(/段落变化/.test(reasons[1].cutReason) && /落在重拍/.test(reasons[1].cutReason), '切开的理由没有写上');
+}
+
 // ---------- 对话工具：分析 → 分镜 → 成片声轨 ----------
 {
   const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ic-audio-'));
@@ -412,7 +439,9 @@ function loadSegmentPlanner() {
   ok(empty.showImport === false && empty.showCast === false, '创作模式不应出现导入原片或替换角色');
   ok(empty.generateDisabled === true && empty.generateHint === 'need-audio', '没有歌曲时生成时间轴应该关闭并给出提示');
   const ready = ui({ hasAudio: true, busy: false, mode: 'create' });
-  ok(ready.generateDisabled === false && ready.showEmpty === false && ready.showImport === false, '有歌曲的创作模式应能生成时间轴且仍不显示导入');
+  ok(ready.generateDisabled === true && ready.generateHint === 'need-analyze' && ready.showImport === false, '只有歌曲、还没听完时不能直接生成时间轴');
+  const confirmed = ui({ hasAudio: true, hasAnalysis: true, confirmed: true, busy: false, mode: 'create' });
+  ok(confirmed.generateDisabled === false && confirmed.showEmpty === false, '确认分段之后才能生成时间轴');
   const remix = ui({ hasAudio: false, busy: false, mode: 'remix' });
   ok(remix.showImport === true && remix.showCast === true, '复刻模式应显示导入原片和替换角色');
   ok(ui({ hasAudio: false, busy: true, mode: 'create' }).uploadDisabled === true, '忙时上传才应禁用');
