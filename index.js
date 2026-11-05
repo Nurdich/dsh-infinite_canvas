@@ -23,6 +23,7 @@ import {
   planMusicVideoPackage,
   stampGeneration,
   snapGenerationDuration,
+  mvWirePlan,
   adaptGenAttempt,
   mergeCreative,
   analysisIsThin,
@@ -3652,9 +3653,10 @@ function layMusicVideo(doc, audio, pkg) {
   const refNodes = [];
   const addRef = (kind, item, index) => {
     const node = upsertMvNode(doc, 'mv:' + from + ':' + kind + ':' + index, 'image', item.name, {
-      mvFrom: from, prompt: item.imagePrompt || item.desc || item.name,
+      mvFrom: from, mvRole: kind, refName: item.name,
+      prompt: item.imagePrompt || item.desc || item.name,
       imageSuffix: pkg.imageSuffix || IMAGE_SEND_SUFFIX,
-      assetId: null, ratio: '16:9', size: '2K', imageCount: 1, status: 'idle',
+      ratio: '16:9', size: '2K', imageCount: 1,
     });
     refNodes.push(node);
     return node;
@@ -3663,7 +3665,8 @@ function layMusicVideo(doc, audio, pkg) {
   (pkg.locations || []).forEach((item, i) => {
     addRef('loc', { ...item, imagePrompt: item.mainPrompt || item.imagePrompt }, i);
     upsertMvNode(doc, 'mv:' + from + ':locmv:' + i, 'image', item.name + '·多视角', {
-      mvFrom: from, prompt: item.multiViewPrompt || item.imagePrompt || item.name,
+      mvFrom: from, mvRole: 'loc-view', refName: item.name,
+      prompt: item.multiViewPrompt || item.imagePrompt || item.name,
       imageSuffix: pkg.imageSuffix || IMAGE_SEND_SUFFIX,
       ratio: '16:9', size: '2K', imageCount: 1,
     });
@@ -3677,11 +3680,14 @@ function layMusicVideo(doc, audio, pkg) {
       shots: sc.shots, segMaxSeconds: 15, warnings: [], script: '', requirement: pkg.treatment && pkg.treatment.style || '',
     });
     boards.push(sb);
-    const kf = upsertMvNode(doc, 'mv:' + from + ':kf:' + si, 'image', sc.title + ' 关键帧', {
-      mvFrom: from, mvIndex: si,
-      prompt: (sc.shots[0] && sc.shots[0].imagePrompt) || sc.title,
-      imageSuffix: pkg.imageSuffix || IMAGE_SEND_SUFFIX,
-      assetId: null, ratio: '16:9', size: '2K', imageCount: 1, status: 'idle',
+    (sc.shots || []).forEach((shot, shi) => {
+      upsertMvNode(doc, 'mv:' + from + ':kf:' + si + ':' + shi, 'image', (shot.title || sc.title) + ' 分镜', {
+        mvFrom: from, mvRole: 'shot', mvIndex: si, shotIndex: shi,
+        refName: shot.title || ('shot-' + shi),
+        prompt: shot.imagePrompt || sc.title,
+        imageSuffix: pkg.imageSuffix || IMAGE_SEND_SUFFIX,
+        ratio: '16:9', size: '2K', imageCount: 1,
+      });
     });
     const fp = sceneFingerprint(sc);
     const prevVid = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === 'mv:' + from + ':vid:' + si);
@@ -3695,6 +3701,7 @@ function layMusicVideo(doc, audio, pkg) {
         const hit = ((audio.data && audio.data.sliceManifest) || []).find((sl) => Math.abs(Number(sl.startSec) - Number(sc.startSec)) < 0.25 && Math.abs(Number(sl.endSec) - Number(sc.endSec)) < 0.25);
         return hit && hit.assetId;
       })()) || '',
+      mvRole: 'video', refName: sc.title,
       resolution: '720P', ratio: '16:9',
       mvFp: fp,
       mvStale: !!(oldAsset && oldFp && oldFp !== fp) || !!(sc.gen && sc.gen.stale),
@@ -3704,36 +3711,38 @@ function layMusicVideo(doc, audio, pkg) {
     if (sc.keep) video.data.skipGen = true;
     connectEdge(doc, audio.id, sb.id, 'analysis', 'music');
     connectEdge(doc, sb.id, video.id, 'out', 'prompt');
-    connectEdge(doc, kf.id, video.id, 'out', 'ref');
-    const want = new Set([].concat(sc.refs && sc.refs.characters || [], sc.refs && sc.refs.locations || [], sc.refs && sc.refs.props || []));
-    for (const ref of refNodes) {
-      if (!want.size || want.has(ref.data.label)) connectEdge(doc, ref.id, video.id, 'out', 'ref');
-    }
     for (const name of (sc.refs && sc.refs.locations) || []) {
       const mv = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.label === name + '·多视角' && n.data.mvFrom === from);
       if (mv) connectEdge(doc, mv.id, video.id, 'out', 'ref');
     }
-    const missingMain = (sc.refs && sc.refs.locations || []).filter((name) => {
-      const loc = (pkg.locations || []).find((l) => l.name === name);
-      return loc && !loc.hasMain;
-    });
-    video.data.refBlocked = missingMain.length ? ('场景「' + missingMain[0] + '」还没有主图') : '';
+    video.data.refBlocked = '';
     if (sc.sourceKeyframeAssetId) {
       const src = upsertMvNode(doc, 'mv:' + from + ':src:' + si, 'image', sc.title + ' 原镜', {
         mvFrom: from, mvIndex: si, assetId: sc.sourceKeyframeAssetId, status: 'done', prompt: sc.sourceNote || '',
       });
-      connectEdge(doc, src.id, kf.id, 'out', 'ref');
+      const firstShot = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === 'mv:' + from + ':kf:' + si + ':0');
+      if (firstShot) connectEdge(doc, src.id, firstShot.id, 'out', 'ref');
       connectEdge(doc, src.id, video.id, 'out', 'ref');
     }
     const continuous = sc.join === 'continuous' || (sc.join == null && sc.continued);
-    if (si > 0) {
-      connectEdge(doc, boards[si - 1].id, sb.id, 'tail', 'prev');
-      if (continuous) connectEdge(doc, videos[si - 1].id, video.id, 'tailpick', 'frame');
-      else connectEdge(doc, kf.id, video.id, 'out', 'frame');
-    } else {
-      connectEdge(doc, kf.id, video.id, 'out', 'frame');
-    }
+    if (si > 0) connectEdge(doc, boards[si - 1].id, sb.id, 'tail', 'prev');
+    if (continuous && si > 0) connectEdge(doc, videos[si - 1].id, video.id, 'tailpick', 'frame');
   });
+  const findKey = (key) => Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === 'mv:' + from + ':' + key);
+  const findRef = (role, name) => Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvFrom === from && n.data.mvRole === role && n.data.refName === name);
+  for (const link of mvWirePlan(pkg)) {
+    const fromNode = link.fromName ? findRef(link.fromRole, link.fromName) : findKey(link.fromKey);
+    const toNode = findKey(link.toKey);
+    if (!fromNode || !toNode) continue;
+    if (link.toPort === 'frame') {
+      const already = (doc.edges || []).some((e) => e.toNode === toNode.id && e.toPort === 'frame');
+      if (already) {
+        connectEdge(doc, fromNode.id, toNode.id, 'out', 'ref');
+        continue;
+      }
+    }
+    connectEdge(doc, fromNode.id, toNode.id, 'out', link.toPort);
+  }
   const cut = upsertMvNode(doc, 'mv:' + from + ':cut', 'finalcut', 'MV 成片', {
     mvFrom: from, status: 'idle', resolution: '720P', ratio: '16:9', transition: 'none',
     progress: null, assetId: null, subs: {}, keepAudio: false,

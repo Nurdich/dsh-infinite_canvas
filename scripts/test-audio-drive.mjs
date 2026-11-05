@@ -380,6 +380,42 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(!/无文字/.test(AD.presentImagePrompt('角色，无文字')), '可见提示词没有去掉无文字');
 }
 
+// ---------- 先定稿角色和场景，再出分镜和视频 ----------
+{
+  const open = [
+    { role: 'char', name: '阿禾', assetId: '', locked: false },
+    { role: 'loc', name: '巷口', assetId: 'loc-1', locked: false },
+  ];
+  const missing = AD.missingRefsForShot({ characters: ['阿禾'], scene: '巷口' }, open);
+  ok(missing.some((m) => m.name === '阿禾' && m.why === 'missing'), '没有图的角色没有拦住分镜');
+  ok(missing.some((m) => m.name === '巷口' && m.why === 'unlocked'), '没定稿的场景没有拦住分镜');
+  const ready = AD.missingRefsForShot({ characters: ['阿禾'], scene: '巷口' }, [
+    { role: 'char', name: '阿禾', assetId: 'c1', locked: true },
+    { role: 'loc', name: '巷口', assetId: 'l1', locked: true },
+  ]);
+  ok(ready.length === 0, '定稿后的角色和场景仍被拦住');
+  const plan = AD.mvWirePlan({ scenes: [{ shots: [{ characters: ['阿禾'], scene: '巷口', props: [] }] }] });
+  ok(plan.some((e) => e.fromRole === 'char' && e.fromName === '阿禾' && e.toKey === 'kf:0:0' && e.toPort === 'ref'), '角色图没有接到分镜参考');
+  ok(plan.some((e) => e.fromRole === 'loc' && e.fromName === '巷口' && e.toKey === 'kf:0:0' && e.toPort === 'ref'), '场景图没有接到分镜参考');
+  ok(plan.some((e) => e.fromKey === 'kf:0:0' && e.toKey === 'vid:0' && e.toPort === 'frame'), '分镜图没有作为视频首帧');
+  ok(plan.some((e) => e.fromRole === 'char' && e.toKey === 'vid:0' && e.toPort === 'ref'), '角色图没有接到视频参考');
+  const progress = AD.refProgress([
+    { role: 'char', assetId: '1', locked: true },
+    { role: 'char', assetId: '2', locked: true },
+    { role: 'char', assetId: '3', locked: true },
+    { role: 'loc', assetId: '4', locked: true },
+    { role: 'loc', assetId: '5', locked: true },
+    { role: 'loc', assetId: '', locked: false },
+    { role: 'loc', assetId: '', locked: false },
+    { role: 'shot', assetId: '', locked: false },
+  ]);
+  ok(progress.characters.locked === 3 && progress.characters.total === 3, '角色进度不是 3/3');
+  ok(progress.locations.locked === 2 && progress.locations.total === 4, '场景进度不是 2/4');
+  ok(progress.shots.have === 0 && progress.shots.total === 1 && progress.stage === 'refs', '设定没齐时不应进入分镜阶段');
+  const down = AD.downstreamOf([{ fromNode: 'c', toNode: 'k' }, { fromNode: 'k', toNode: 'v' }], 'c');
+  ok(down.indexOf('k') >= 0 && down.indexOf('v') >= 0, '重生成设定没有找到下游分镜和视频');
+}
+
 // ---------- 失败后再生成：先分类，再改参数 ----------
 {
   ok(AD.classifyGenFailure('DataInspectionFailed: sexual content', 400) === 'moderation', '审核失败没有归到内容审核');
@@ -628,6 +664,10 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   const edges = doc.edges || [];
   ok(edges.some((e) => e.fromPort === 'analysis' && e.toPort === 'music' && e.toNode === mv.storyboardNodeId), '分析输出口没有连到分镜 music');
   ok(edges.some((e) => e.fromNode === analyzed.nodeId && e.fromPort === 'out' && e.toPort === 'music' && e.toNode === mv.finalcutNodeId), '原曲没有接到成片 music');
+  const charNode = Object.values(doc.nodes).find((nd) => nd && nd.data && nd.data.mvRole === 'char');
+  const shotNode = Object.values(doc.nodes).find((nd) => nd && nd.data && nd.data.mvRole === 'shot' && nd.data.shotIndex === 0);
+  ok(charNode && shotNode && edges.some((e) => e.fromNode === charNode.id && e.toNode === shotNode.id && e.toPort === 'ref'), '角色设定没有连到分镜图的参考口');
+  ok(edges.some((e) => e.fromNode === shotNode.id && e.toPort === 'frame'), '第一张分镜图没有连到视频首帧');
   ok(edges.some((e) => e.toNode === mv.finalcutNodeId && e.toPort === 'in'), '成片没有视频入口');
   const profile = doc.skillProfile || {};
   ok(profile.form === 'music-video', '项目规格没有写成 music-video');
