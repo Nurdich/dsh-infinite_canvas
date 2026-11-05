@@ -576,8 +576,8 @@ export function buildRemixPackage(analysis, opts) {
     maxClipSeconds: 15,
     treatment: { title: '翻拍', logline: style, style, styleAnchor: style.slice(0, 80) },
     continuity: { styleLock: style.slice(0, 80), seed: null },
-    characters: [{ name: who, desc: style, imagePrompt: '角色设定图，' + who + '，三视图，无文字' }],
-    locations: [{ name: '原片场景', desc: '来自原 MV', imagePrompt: '场景设定图，原片场景，无文字' }],
+    characters: [personFromRaw({ name: who, desc: style, role: '替换进原片的人' }, null)],
+    locations: [{ name: '原片场景', desc: '来自原 MV', imagePrompt: presentImagePrompt('场景，原片场景。保留原镜的空间和光线。不要出现人物。') }],
     props: [],
     downbeats: a.downbeats || [],
     scenes,
@@ -1578,6 +1578,122 @@ function shotCuts(start, end, downs) {
   return spans.length ? spans : [[start, end]];
 }
 
+/** 出图时才附上的约束，不放进用户能编辑的提示词。 */
+export const IMAGE_SEND_SUFFIX = '不要出现文字、字幕、水印或标志';
+
+export function presentImagePrompt(text) {
+  return String(text || '')
+    .replace(/[，,。.\s]*(无文字|无字幕|无水印|无标志|不要文字|不要出现文字、字幕、水印或标志)+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+export function promptForImageSend(visible, suffix) {
+  const base = presentImagePrompt(visible);
+  const extra = suffix == null ? IMAGE_SEND_SUFFIX : String(suffix || '');
+  if (!extra || base.includes(extra)) return base;
+  return base ? (base + '。' + extra) : extra;
+}
+
+const STORY_BEAT = {
+  intro: { want: '让人认出是谁、在哪里', conflict: '事情还按旧样子走', turn: '音乐进来，旧规矩松动', ending: '世界被改写了一点' },
+  verse: { want: '把想要的东西变成一件具体的事', conflict: '有一个看得见的阻碍', turn: '人决定跨过它', ending: '局面和这一段开头不同' },
+  'pre-chorus': { want: '把力量聚到下一拍', conflict: '还差最后一下', turn: '阻碍被推到眼前', ending: '下一拍必须放开' },
+  chorus: { want: '把这段的愿望做完', conflict: '对立也同时出现', turn: '两边撞上', ending: '这一轮有一个暂时的结果' },
+  bridge: { want: '看清刚才的办法要付的代价', conflict: '老办法失效', turn: '换一条看得见的路', ending: '准备进入最后一段' },
+  breakdown: { want: '用动作接住没有词的段落', conflict: '不能只重复上一镜', turn: '动作落在重拍上', ending: '能量重新堆起来' },
+  instrumental: { want: '用一个新的动作或空间细节接住人声空档', conflict: '画面不能原地打转', turn: '出现一件刚才没有的东西', ending: '给下一段人声留入口' },
+  outro: { want: '把这件事收住', conflict: '不能假装什么都没发生', turn: '留下一个最后的可见结果', ending: '停在最后一个画面' },
+  unknown: { want: '把这段音乐变成一件事', conflict: '事情要有阻碍', turn: '发生一个可见的变化', ending: '接到下一段' },
+};
+
+/** 没走模型时的故事骨架。标明是模板，不假装已经写成了具体剧本。 */
+export function draftStory(analysis, styleText) {
+  const a = analysis || {};
+  const style = str(styleText, 400);
+  const sections = (a.sections || []).filter((s) => s && s.endSec > s.startSec);
+  const rows = sections.length ? sections : [{ id: 's1', label: 'verse', startSec: 0, endSec: Number(a.durationSec) || 0, visual: '' }];
+  const lyricOf = (sec) => (a.lyrics || []).filter((l) => {
+    const mid = (num(l.startSec, 0) + num(l.endSec, 0)) / 2;
+    return mid >= num(sec.startSec, 0) && mid < num(sec.endSec, 0);
+  }).map((l) => l.text).filter(Boolean).join(' / ');
+  const beats = rows.map((sec) => {
+    const role = STORY_BEAT[sec.label] || STORY_BEAT.unknown;
+    const lyric = lyricOf(sec);
+    const plot = [sec.visual, lyric, role.turn].filter(Boolean).join('。') || role.turn;
+    return {
+      sectionId: sec.id || '',
+      label: sec.label || 'unknown',
+      startSec: num(sec.startSec, 0),
+      endSec: num(sec.endSec, 0),
+      want: role.want,
+      conflict: role.conflict,
+      turn: role.turn,
+      ending: role.ending,
+      plot,
+    };
+  });
+  const lyricHint = ((a.lyrics || []).slice(0, 2).map((l) => l.text).filter(Boolean).join(' / '));
+  const logline = [style, a.summary, lyricHint].filter(Boolean).join('。').slice(0, 280) || '跟着这首歌的起伏做完一件事';
+  return {
+    source: 'template',
+    label: '模板骨架，不是模型写的故事',
+    logline,
+    synopsis: beats.map((b) => sectionLabelZh(b.label) + '：' + b.plot).join('\n'),
+    beats,
+  };
+}
+
+export function storyBeatAt(story, label, timeSec) {
+  const beats = (story && story.beats) || [];
+  const t = num(timeSec, 0);
+  return beats.find((b) => (!label || b.label === label) && t >= num(b.startSec, 0) - 0.05 && t < num(b.endSec, 0) + 0.05)
+    || beats.find((b) => b.label === label)
+    || beats[0]
+    || null;
+}
+
+export function characterSheetPrompt(person) {
+  const p = person || {};
+  const look = p.appearance || {};
+  const outfit = (p.outfits && p.outfits[0] && p.outfits[0].desc) || p.outfit || '';
+  return presentImagePrompt([
+    p.name,
+    p.age,
+    p.role,
+    look.face ? ('脸：' + look.face) : '',
+    look.hair ? ('头发：' + look.hair) : '',
+    look.build ? ('体态：' + look.build) : '',
+    outfit ? ('衣服：' + outfit) : '',
+    p.personality,
+    p.arc,
+  ].filter(Boolean).join('，'));
+}
+
+function personFromRaw(raw, story) {
+  const src = raw || {};
+  const name = str(src.name, 40) || '表演者';
+  const face = str((src.appearance && src.appearance.face) || src.face, 80) || '五官清楚，全片同一张脸';
+  const hair = str((src.appearance && src.appearance.hair) || src.hair, 80) || '发型全片保持不变';
+  const build = str((src.appearance && src.appearance.build) || src.build, 80) || '体态和年龄感全片保持不变';
+  const outfit = str(src.outfit || (src.outfits && src.outfits[0] && src.outfits[0].desc), 120)
+    || str(src.desc, 80)
+    || '一套从头穿到尾的衣服';
+  const person = {
+    name,
+    role: str(src.role, 80) || ((story && story.beats && story.beats[0] && story.beats[0].want) || '把这件事做完的人'),
+    age: str(src.age, 40),
+    appearance: { face, hair, build },
+    personality: str(src.personality, 80),
+    outfits: [{ phase: '全片', desc: outfit }],
+    props: Array.isArray(src.props) ? src.props.map((x) => str(x, 40)).filter(Boolean).slice(0, 4) : [],
+    arc: str(src.arc, 180) || str(story && story.logline, 180),
+    desc: str(src.desc, 240) || [face, hair, outfit].filter(Boolean).join('。'),
+  };
+  person.imagePrompt = characterSheetPrompt(person);
+  return person;
+}
+
 const SCALES = ['远景', '全景', '中景', '近景', '特写'];
 const ANGLES = ['平视', '低机位', '俯拍', '侧向'];
 
@@ -1605,8 +1721,8 @@ function writeShotCopy(ctx) {
     who + '，' + where + '，' + prop,
     light,
     bit,
-    '无字幕，无水印，无文字',
-  ].join('，');
+    ctx.plot ? ('这一拍：' + ctx.plot) : '',
+  ].filter(Boolean).join('，');
   const videoPrompt = [
     round1(ctx.dur) + ' 秒',
     camera,
@@ -1636,9 +1752,19 @@ export function planMusicVideoPackage(analysis, opts) {
     ? allowed[allowed.length - 1]
     : Math.max(4, Math.min(15, num(opts && opts.maxClipSeconds, 15) || 15));
   const sections = productionSections(a);
+  const styleText = str(opts && (opts.brief || opts.style), 400);
+  const providedStory = opts && opts.story && typeof opts.story === 'object' ? opts.story : null;
+  const story = providedStory && Array.isArray(providedStory.beats) && providedStory.beats.length
+    ? {
+      source: providedStory.source || 'edited',
+      label: providedStory.label || (providedStory.source === 'template' ? '模板骨架，不是模型写的故事' : ''),
+      logline: str(providedStory.logline, 280),
+      synopsis: str(providedStory.synopsis, 2000),
+      beats: providedStory.beats,
+    }
+    : draftStory(Object.assign({}, a, { sections }), styleText);
   const cast = castOf(a);
   const downs = downbeatGrid(a);
-  const styleText = str(opts && (opts.brief || opts.style), 400);
   const bits = clauseBits(a);
   if (styleText) bits.unshift(styleText);
   const who = cast.characters[0].name;
@@ -1658,9 +1784,11 @@ export function planMusicVideoPackage(analysis, opts) {
         const move = MOVES[(shotSerial + si) % MOVES.length];
         const angle = section.label === 'chorus' && /地面|贴地/.test(bits.join('')) ? '低机位' : ANGLES[(shotSerial + si) % ANGLES.length];
         const light = section.color || ( /阳光|刺眼/.test(bits.join('')) ? '阳光刺眼，高反差' : (section.energy > 0.7 ? '硬光，高反差' : '柔光，低反差'));
-        const bit = [section.visual, bits[shotSerial % bits.length]].filter(Boolean).join('，');
+        const beat = storyBeatAt(story, section.label, s0);
+        const bit = [beat && beat.plot, section.visual, bits[shotSerial % bits.length]].filter(Boolean).join('，');
         const copy = writeShotCopy({
           scale, move, angle, section, who, where, prop, light, bit,
+          plot: beat && beat.plot,
           cutAt: s0, dur: s1 - s0, hold: section.label === 'bridge' && si === 0,
         });
         const lines = lyricsIn(a, s0, s1);
@@ -1682,8 +1810,9 @@ export function planMusicVideoPackage(analysis, opts) {
           camera: copy.camera,
           light: copy.light,
           cutAt: round3(s0),
-          imagePrompt: copy.imagePrompt,
+          imagePrompt: presentImagePrompt(copy.imagePrompt),
           videoPrompt: copy.videoPrompt,
+          plotBeat: (beat && beat.plot) || '',
           timeBeats,
           vfx: section.label === 'chorus' ? '光随重拍抬起，不滥用光斑' : '',
           negative: 'off-beat cut, cut one frame after the beat, lip-sync drift, watermark, subtitle burned in, extra limbs',
@@ -1751,27 +1880,25 @@ export function planMusicVideoPackage(analysis, opts) {
     bpm: a.bpm,
     source: a.source,
     maxClipSeconds: maxClip,
+    story,
+    imageSuffix: IMAGE_SEND_SUFFIX,
     treatment: {
       title: str(opts && opts.title, 40) || '音乐视频',
-      logline: a.summary || bits[0],
+      logline: story.logline || a.summary || bits[0],
       style: (styleText ? styleText + '。' : '') + style.slice(0, 320),
       styleAnchor: (styleText || bits[0] || '').slice(0, 80),
     },
     downbeats: downs,
-    characters: cast.characters.map((c) => ({
-      name: c.name,
-      desc: c.desc || (c.name + '，全片保持同一张脸、同一身衣服'),
-      imagePrompt: '角色设定图，' + c.name + '，三视图，中性背景，' + (c.desc || style).slice(0, 80) + '，无文字',
-    })),
+    characters: cast.characters.map((c) => personFromRaw(c, story)),
     locations: cast.locations.map((c) => ({
       name: c.name,
       desc: c.desc || c.name,
-      imagePrompt: '场景设定图，' + c.name + '，宽画幅，' + (c.desc || style).slice(0, 80) + '，无人，无文字',
+      imagePrompt: presentImagePrompt('场景，' + c.name + '。' + (c.desc || '') + '。不要出现人物。'),
     })),
     props: cast.props.map((c) => ({
       name: c.name,
       desc: c.desc || c.name,
-      imagePrompt: '道具设定图，' + c.name + '，白底，' + (c.desc || '').slice(0, 60) + '，无文字',
+      imagePrompt: presentImagePrompt('道具，' + c.name + '。' + (c.desc || '') + '。单独放在画面里。'),
     })),
     scenes,
     warnings,
@@ -1804,6 +1931,17 @@ export function planMusicVideoShots(analysis, opts) {
 export function mergeCreative(pkg, creative) {
   const c = creative && typeof creative === 'object' ? creative : {};
   const next = JSON.parse(JSON.stringify(pkg));
+  if (c.story && typeof c.story === 'object') {
+    const prev = next.story || {};
+    next.story = {
+      source: 'model',
+      label: '',
+      logline: str(c.story.logline || prev.logline, 280),
+      synopsis: str(c.story.synopsis || prev.synopsis, 2000),
+      beats: Array.isArray(c.story.beats) && c.story.beats.length ? c.story.beats : (prev.beats || []),
+    };
+    if (next.treatment) next.treatment.logline = next.story.logline || next.treatment.logline;
+  }
   if (c.treatment && typeof c.treatment === 'object') {
     if (c.treatment.logline) next.treatment.logline = str(c.treatment.logline, 400);
     if (c.treatment.style) next.treatment.style = str(c.treatment.style, 400);
@@ -1814,11 +1952,23 @@ export function mergeCreative(pkg, creative) {
     return base.map((item, i) => {
       const src = incoming[i];
       if (!src || typeof src !== 'object') return item;
-      return {
+      const merged = {
         ...item,
+        ...src,
+        name: item.name,
         desc: src.desc ? str(src.desc, 240) : item.desc,
-        imagePrompt: src.imagePrompt ? str(src.imagePrompt, 500) : item.imagePrompt,
+        imagePrompt: presentImagePrompt(src.imagePrompt ? str(src.imagePrompt, 800) : item.imagePrompt),
       };
+      if (merged.appearance || merged.outfit || merged.role) {
+        const sheet = personFromRaw(merged, next.story);
+        merged.appearance = sheet.appearance;
+        merged.outfits = sheet.outfits;
+        merged.imagePrompt = sheet.imagePrompt || merged.imagePrompt;
+        merged.role = sheet.role;
+        merged.age = sheet.age;
+        merged.arc = sheet.arc;
+      }
+      return merged;
     });
   };
   next.characters = overlayList(next.characters, c.characters);
@@ -1847,7 +1997,8 @@ export function mergeCreative(pkg, creative) {
 export function llmCreativeUserPrompt(pkg) {
   const lines = [
     '下面是一支音乐 MV 的时间网格。时间码已经按歌曲卡死，禁止改 startSec、endSec、duration。',
-    '请只补文字，返回 JSON：{treatment:{logline,style,styleAnchor}, characters:[{desc,imagePrompt}], locations:[...], props:[...], scenes:[{shots:[{visual,camera,motion,light,imagePrompt,videoPrompt}]}]}。',
+    '先写故事再写角色。返回 JSON：{story:{logline,synopsis,beats:[{label,startSec,endSec,want,conflict,turn,ending,plot}]}, treatment:{logline,style,styleAnchor}, characters:[{name,role,age,appearance:{face,hair,build},personality,outfit,arc,desc}], locations:[{name,desc}], props:[{name,desc}], scenes:[{shots:[{visual,camera,motion,light,imagePrompt,videoPrompt,plotBeat}]}]}。',
+    'beats 与歌曲段落一一对应，不要改时间。角色名用故事里的人，不要写 Male Lead 这类占位名，除非用户风格原文里就有。imagePrompt 只写脸、头发、体态、衣服这些具体特征，不要写「无文字」「三视图」「中性背景」。',
     'scenes 与 shots 的数量和顺序必须与网格一致。imagePrompt 是可直接文生图的关键帧；videoPrompt 是可直接生成视频的提示词，含景别、机位、运镜、动作、光、以及切在重拍上。',
     '歌曲摘要：' + (pkg.treatment && pkg.treatment.logline || ''),
     '风格：' + (pkg.treatment && pkg.treatment.style || ''),
