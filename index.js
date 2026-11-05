@@ -48,6 +48,7 @@ import {
   buildOmniTextBody,
   explainModelError,
   callOmni,
+  IMAGE_SEND_SUFFIX,
   groupShotsForClips,
   analysisDigest,
   AUDIO_ANALYSIS_SCHEMA,
@@ -3633,6 +3634,7 @@ function layMusicVideo(doc, audio, pkg) {
   const addRef = (kind, item, index) => {
     const node = upsertMvNode(doc, 'mv:' + from + ':' + kind + ':' + index, 'image', item.name, {
       mvFrom: from, prompt: item.imagePrompt || item.desc || item.name,
+      imageSuffix: pkg.imageSuffix || IMAGE_SEND_SUFFIX,
       assetId: null, ratio: '16:9', size: '2K', imageCount: 1, status: 'idle',
     });
     refNodes.push(node);
@@ -3643,6 +3645,7 @@ function layMusicVideo(doc, audio, pkg) {
     addRef('loc', { ...item, imagePrompt: item.mainPrompt || item.imagePrompt }, i);
     upsertMvNode(doc, 'mv:' + from + ':locmv:' + i, 'image', item.name + '·多视角', {
       mvFrom: from, prompt: item.multiViewPrompt || item.imagePrompt || item.name,
+      imageSuffix: pkg.imageSuffix || IMAGE_SEND_SUFFIX,
       ratio: '16:9', size: '2K', imageCount: 1,
     });
   });
@@ -3658,6 +3661,7 @@ function layMusicVideo(doc, audio, pkg) {
     const kf = upsertMvNode(doc, 'mv:' + from + ':kf:' + si, 'image', sc.title + ' 关键帧', {
       mvFrom: from, mvIndex: si,
       prompt: (sc.shots[0] && sc.shots[0].imagePrompt) || sc.title,
+      imageSuffix: pkg.imageSuffix || IMAGE_SEND_SUFFIX,
       assetId: null, ratio: '16:9', size: '2K', imageCount: 1, status: 'idle',
     });
     const fp = sceneFingerprint(sc);
@@ -3750,6 +3754,7 @@ async function ensureMusicPackage(analysis, args, completeFn) {
       maxClipSeconds: Number(args && args.maxClipSeconds) || 15,
       brief: style, style,
       allowedDurations: args && args.allowedDurations,
+      story: args && args.story,
     });
     if (analysisIsThin(analysis) && typeof completeFn === 'function') {
       try {
@@ -3765,7 +3770,7 @@ async function ensureMusicPackage(analysis, args, completeFn) {
     }
   }
   if (!pkg || !Array.isArray(pkg.scenes) || !pkg.scenes.length) {
-    pkg = planMusicVideoPackage(analysis, { maxClipSeconds: 15, brief: style, style });
+    pkg = planMusicVideoPackage(analysis, { maxClipSeconds: 15, brief: style, style, story: args && args.story });
   }
   return pkg;
 }

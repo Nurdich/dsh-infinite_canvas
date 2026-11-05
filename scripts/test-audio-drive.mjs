@@ -350,6 +350,36 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(analyzeFn.includes('tlNeedOmni') && !analyzeFn.includes('complete('), '听歌分析在没配音频理解时不应去叫文本模型');
 }
 
+{
+  const pkg = AD.planMusicVideoPackage({
+    durationSec: 30, bpm: 100, summary: '夜里赶路', style: '',
+    sections: [
+      { label: 'verse', startSec: 0, endSec: 15, visual: '人还在门口犹豫' },
+      { label: 'chorus', startSec: 15, endSec: 30, visual: '推开门走进雨里' },
+    ],
+    characters: [{ name: '阿禾', desc: '短发' }],
+    locations: [{ name: '巷口', desc: '湿漉漉的砖墙' }],
+  }, { style: '手持，冷色' });
+  ok(pkg.story && pkg.story.source === 'template' && /模板/.test(pkg.story.label), '没有模型时应给出标明的故事骨架');
+  ok(pkg.story.logline && pkg.story.synopsis && pkg.story.beats.length >= 2, '故事缺少一句话、梗概或按段情节');
+  ok(/推开门走进雨里|音乐进来/.test(pkg.scenes[pkg.scenes.length - 1].shots[0].plotBeat || pkg.scenes[pkg.scenes.length - 1].shots[0].visual), '镜头没有接上这一段的情节');
+  const person = pkg.characters[0];
+  ok(person.name === '阿禾' && person.appearance && person.appearance.face && person.appearance.hair && person.appearance.build, '角色缺少脸、头发或体态');
+  ok(person.role && person.arc && person.imagePrompt && !/无文字|三视图|Male Lead/.test(person.imagePrompt), '角色图提示词仍是套话：' + person.imagePrompt);
+  ok(!/无文字/.test(pkg.locations[0].imagePrompt) && /砖墙/.test(pkg.locations[0].imagePrompt), '场景图没有用上具体描述');
+  ok(pkg.imageSuffix && !person.imagePrompt.includes(pkg.imageSuffix), '出图约束不应出现在可编辑提示词里');
+  const edited = AD.planMusicVideoPackage({
+    durationSec: 30, bpm: 100, summary: '夜里赶路',
+    sections: [
+      { label: 'verse', startSec: 0, endSec: 15 },
+      { label: 'chorus', startSec: 15, endSec: 30 },
+    ],
+  }, { style: '手持', story: Object.assign({}, pkg.story, { logline: '阿禾必须在雨停前把信送到', source: 'edited' }) });
+  ok(edited.story.logline === '阿禾必须在雨停前把信送到' && edited.story.source === 'edited', '改过的剧情没有进入重算');
+  ok(AD.promptForImageSend('一张脸', '不要出现文字、字幕、水印或标志').endsWith('不要出现文字、字幕、水印或标志'), '发送时没有补上隐藏约束');
+  ok(!/无文字/.test(AD.presentImagePrompt('角色，无文字')), '可见提示词没有去掉无文字');
+}
+
 // ---------- 对话工具：分析 → 分镜 → 成片声轨 ----------
 {
   const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ic-audio-'));

@@ -6151,6 +6151,9 @@ function queueThumb(assetId) {
     }
 
     async function apiImage(prompt, refBlobs, s, opts) {
+      if (opts && opts.imageSuffix && !String(prompt || '').includes(opts.imageSuffix)) {
+        prompt = String(prompt || '').replace(/\s+$/, '') + '。' + opts.imageSuffix;
+      }
       if (!s.baseUrl) throw new Error('未配置图片 API');
       // URL 归一化：裸域 → /v1；粘贴完整端点也不会被二次拼接
       let base = s.baseUrl.replace(/\/+$/, '').replace(/\/images\/generations$/, '');
@@ -11259,7 +11262,7 @@ function queueThumb(assetId) {
           for (let i = 0; i < want; i++) {
             if (want > 1) update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.progress = (i + 1) + '/' + want; });
             const blob = await apiImage(p, metas, mcfg, {
-              size: n.data.size, ratio: n.data.ratio, nodeExtra: n.data.imgExtra, warn: addWarn,
+              size: n.data.size, ratio: n.data.ratio, nodeExtra: n.data.imgExtra, imageSuffix: n.data.imageSuffix, warn: addWarn,
               // 任务式厂商（三宝图片）：任务 id 就是凭证——代理超时/页面关闭后仍可凭 id 回查（与视频同口径）
               onTask: (tid, qurl) => {
                 update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.taskId = String(tid || ''); nd.data.taskQueryUrl = String(qurl || ''); } });
@@ -15101,6 +15104,7 @@ function queueThumb(assetId) {
           const r = await hostRpc('audioBuildTimeline', {
             projectId: S.activeId, nodeId: n.id, style,
             analysis: (live && live.data && live.data.analysis) || analysis,
+            ...(live && live.data && live.data.storyEdited && live.data.mvPackage && live.data.mvPackage.story ? { story: live.data.mvPackage.story } : {}),
             ...(allowedDurations ? { allowedDurations } : {}),
           });
           if (r && r.package) {
@@ -15622,7 +15626,43 @@ function queueThumb(assetId) {
         tab !== 'overview' ? h('div', { className: 'dshic-mtl-doc' },
           tab === 'script'
             ? h('div', null,
-              h('div', null, (pkg && pkg.script) || ''),
+              (pkg && pkg.story) ? h('div', null,
+                pkg.story.label ? h('div', { className: 'dshic-hint' }, pkg.story.label) : null,
+                h('div', null, '一句话'),
+                h('textarea', {
+                  rows: 2, value: pkg.story.logline || '',
+                  onChange: (e) => update((s) => {
+                    const nd = s.graph.nodes[n.id];
+                    if (!nd || !nd.data.mvPackage || !nd.data.mvPackage.story) return;
+                    nd.data.mvPackage.story.logline = e.target.value;
+                    nd.data.mvPackage.story.source = 'edited';
+                    nd.data.storyEdited = true;
+                  }),
+                }),
+                h('div', null, '梗概'),
+                h('textarea', {
+                  rows: 4, value: pkg.story.synopsis || '',
+                  onChange: (e) => update((s) => {
+                    const nd = s.graph.nodes[n.id];
+                    if (!nd || !nd.data.mvPackage || !nd.data.mvPackage.story) return;
+                    nd.data.mvPackage.story.synopsis = e.target.value;
+                    nd.data.mvPackage.story.source = 'edited';
+                    nd.data.storyEdited = true;
+                  }),
+                }),
+                (pkg.story.beats || []).map((b, i) => h('div', { key: 'beat' + i },
+                  (b.label || '') + ' ' + (b.startSec || 0) + '-' + (b.endSec || 0),
+                  h('textarea', {
+                    rows: 2, value: b.plot || '',
+                    onChange: (e) => update((s) => {
+                      const nd = s.graph.nodes[n.id];
+                      const beat = nd && nd.data.mvPackage && nd.data.mvPackage.story && nd.data.mvPackage.story.beats && nd.data.mvPackage.story.beats[i];
+                      if (!beat) return;
+                      beat.plot = e.target.value;
+                      nd.data.mvPackage.story.source = 'edited';
+                      nd.data.storyEdited = true;
+                    }),
+                  })))) : h('div', null, (pkg && pkg.script) || ''),
               ((pkg && pkg.subtitleTrack) || []).map((cue, i) => h('input', {
                 key: cue.id || i, value: cue.text || '',
                 onChange: (e) => update((s) => {
@@ -15633,7 +15673,11 @@ function queueThumb(assetId) {
               })))
             : tab === 'roles'
               ? ((pkg && pkg.characters && pkg.characters.length)
-                ? pkg.characters.map((c) => (c.name || '') + ' · ' + T('tlFace') + ' ' + (c.faceId || '') + ' · ' + T('tlCasting') + ' ' + (c.castingCount || 1) + '\n' + (c.appearance || c.desc || '')).join('\n\n')
+                ? pkg.characters.map((c) => {
+                  const look = c.appearance && typeof c.appearance === 'object' ? c.appearance : {};
+                  const outfit = (c.outfits && c.outfits[0] && c.outfits[0].desc) || '';
+                  return [c.name, c.role, c.age, look.face, look.hair, look.build, outfit, c.arc, c.imagePrompt].filter(Boolean).join('\n');
+                }).join('\n\n')
                 : T('tlNoCast'))
               : ((pkg && pkg.locations && pkg.locations.length)
                 ? pkg.locations.map((loc) => (loc.name || '') + ' · ' + T('tlMain') + (loc.hasMain ? ' ✓' : ' · ' + T('tlBlocked')) + ' · ' + T('tlViews') + (loc.hasMultiView ? ' ✓' : '') + '\n' + (loc.mainPrompt || '')).join('\n\n')
