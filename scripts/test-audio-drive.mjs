@@ -380,6 +380,104 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(!/无文字/.test(AD.presentImagePrompt('角色，无文字')), '可见提示词没有去掉无文字');
 }
 
+// ---------- 听歌超时、重试、流式增量 ----------
+{
+  const short = AD.analysisBudget({ durationSec: 30 });
+  ok(short.idleMs === 90000 && short.totalMs === 10 * 60 * 1000, '短歌应按 90 秒静默、至少 10 分钟：' + JSON.stringify(short));
+  const mid = AD.analysisBudget({ durationSec: 5 * 60 });
+  ok(mid.totalMs === 20 * 60 * 1000, '5 分钟的窗口应按 4 倍给 20 分钟');
+  const long = AD.analysisBudget({ durationSec: 10 * 60 });
+  ok(long.totalMs === 30 * 60 * 1000, '超长窗口应封顶 30 分钟');
+  const custom = AD.analysisBudget({ durationSec: 30, idleMs: 120000 });
+  ok(custom.idleMs === 120000 && custom.totalMs === 10 * 60 * 1000, '设置里的分析超时应改静默上限');
+  ok(AD.analysisOuterMaxMs() === 30 * 60 * 1000 * 3 + 2000 + 6000 + 15000, '外层等待短于三次总时长加退避');
+  ok(AD.analysisOuterMs(mid) >= mid.totalMs * 3, '外层没有盖住这一段的全部尝试');
+  const sentence = AD.explainAnalysisTimeout({ windowIndex: 1, windowCount: 5, elapsedMs: 182000, idleMs: 90000, reason: 'idle' });
+  ok(sentence === '第 2/5 段在 3 分 02 秒后超时（90 秒没有新数据），可点重试。', '超时句子不对：' + sentence);
+  const acc = AD.createSseAccumulator();
+  acc.push('data: {"choices":[{"delta":{"reasoning_content":"先想"}}]}\n');
+  const split = 'data: {"choices":[{"delta":{"content":"{\\"bpm\\":"}}]}\nda';
+  acc.push(split.slice(0, 20));
+  acc.push(split.slice(20) + 'ta: {"choices":[{"delta":{"content":"90}"}}]}\n');
+  const done = acc.finish();
+  ok(done.reasoning === '先想' && done.text === '{"bpm":90}', '流式增量没有拼上思考或回答：' + JSON.stringify(done));
+  const chunks = [];
+  const fetchStream = async () => ({
+    ok: true,
+    status: 200,
+    body: new ReadableStream({
+      start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode('data: {"choices":[{"delta":{"reasoning_content":"想"}}]}\n\n'));
+        controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"{\\"bpm\\":90}"}}]}\n\n'));
+        controller.close();
+      },
+    }),
+  });
+  const seen = [];
+  const streamed = await AD.callOmni({
+    baseUrl: 'https://example.invalid/v1', apiKey: 'sk', durationSec: 30, idleMs: 5000,
+    body: { model: 'm' }, fetchImpl: fetchStream,
+    onDelta: (d) => seen.push(d.text + '|' + d.reasoning),
+  });
+  ok(streamed.includes('90') && seen.some((s) => s.includes('想')), '流式回调没有在整段结束前吐出增量');
+  let hung = true;
+  const fetchHang = async () => ({
+    ok: true,
+    status: 200,
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"半截歌词"}}]}\n\n'));
+      },
+      cancel() { hung = false; },
+    }),
+  });
+  let timed = null;
+  try {
+    await AD.callOmni({
+      baseUrl: 'https://example.invalid/v1', apiKey: 'sk', durationSec: 30, idleMs: 80, totalMs: 5000,
+      body: { model: 'm' }, fetchImpl: fetchHang, windowIndex: 1, windowCount: 5,
+    });
+  } catch (e) { timed = e; }
+  ok(timed && timed.timeout && timed.partial && timed.partial.text === '半截歌词', '静默超时没有留下已收到的文字');
+  ok(/第 2\/5 段/.test(timed && timed.brief) && /重试/.test(timed && timed.brief), '超时错误没有指明窗口和重试');
+  ok(hung === false, '静默超时没有取消还挂着的流');
+  let tries = 0;
+  const sleeps = [];
+  const recovered = await AD.callOmniWithRetry({
+    baseUrl: 'https://example.invalid/v1', apiKey: 'sk', durationSec: 10,
+    body: { model: 'm' },
+    sleep: async (ms) => { sleeps.push(ms); },
+    fetchImpl: async () => {
+      tries += 1;
+      if (tries < 3) return { ok: false, status: 503, text: async () => 'unavailable' };
+      return { ok: true, status: 200, text: async () => 'data: {"choices":[{"delta":{"content":"{\\"bpm\\":110}"}}]}\n\n' };
+    },
+  });
+  ok(tries === 3 && sleeps[0] === 2000 && sleeps[1] === 6000 && String(recovered).includes('110'), '5xx 没有按退避重试两次');
+  const kept = [];
+  let windowErr = null;
+  try {
+    await AD.runWindows([{ offsetSec: 0 }, { offsetSec: 30 }], async (w) => {
+      if (w.offsetSec === 30) { const e = new Error('timeout'); e.timeout = true; e.brief = '第 2/2 段超时，可点重试。'; e.partial = { text: '后半' }; throw e; }
+      return { bpm: 100 };
+    }, { sleep: async () => {} });
+  } catch (e) { windowErr = e; }
+  ok(windowErr && windowErr.parts && windowErr.parts.length === 1 && windowErr.parts[0].analysis.bpm === 100, '失败窗口把已经听完的结果丢掉了');
+  ok(windowErr.partial && windowErr.partial.text === '后半', '失败窗口没有留下半截文本');
+  const host = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  const analyzeTool = host.slice(host.indexOf("name: 'canvas_analyze_audio'"), host.indexOf("name: 'canvas_music_timeline'"));
+  ok(analyzeTool.includes('timeoutMs: analysisOuterMaxMs()') && !analyzeTool.includes('timeoutMs: 180000'), '分析工具仍是 180 秒');
+  ok(!host.includes('AbortSignal.timeout') || !/callOmni[\s\S]{0,400}AbortSignal\.timeout\(/.test(host), '宿主仍用固定超时包住分析');
+  const drive = fs.readFileSync(path.join(ROOT, 'audio-drive.js'), 'utf8');
+  ok(!drive.includes('timeoutMs: r.timeoutMs || 60000'), '描述帧仍用 60 秒硬超时');
+  ok(!/AbortSignal\.timeout\(Math\.max\(5000/.test(drive), 'callOmni 仍在 180 秒处中断整段流');
+  const clientSrc3 = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+  ok(clientSrc3.includes('30 * 60 * 1000 * 3 + 2000 + 6000 + 15000'), '客户端等待短于内层预算');
+  ok(clientSrc3.includes('audioProgress') && clientSrc3.includes('analyzePartial') && clientSrc3.includes('caThinking'), '界面没有轮询进度或展示半截文本');
+  ok(clientSrc3.includes("T('tlRetry')") && clientSrc3.includes('analyzeParts'), '超时后不能从失败的那段继续');
+}
+
 // ---------- 画布助手：跨节点调度与确认门 ----------
 {
   const graph = {

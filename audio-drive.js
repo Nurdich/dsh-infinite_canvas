@@ -1888,6 +1888,9 @@ export async function callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs, id
       err.partial = snap;
       throw err;
     }
+    if (abortReason || (ctrl.signal && ctrl.signal.aborted)) {
+      throw analysisTimeoutError({ ...win, elapsedMs: Date.now() - started, idleMs: budget.idleMs, reason: abortReason || 'idle' }, local.finish());
+    }
     if (!raw) raw = text;
     const snap = local.finish();
     if ((snap.text || snap.reasoning) && onDelta) onDelta(snap);
