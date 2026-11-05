@@ -1206,6 +1206,12 @@ function revealCanvasInRight() {
       'tlStepConfirm': '分段确认',
       'tlStepStyle': '风格与时间轴',
       'tlStepPush': '推到画布',
+      'tlAgent': '助手',
+      'tlAgentPh': '跟助手说，例如：做一个搞笑风的 MV',
+      'tlAgentAuto': '自动推进',
+      'tlAgentConfirm': '确认',
+      'tlAgentRevise': '修改',
+      'tlAgentSpend': '将生成',
       'tlReplaceAudio': '更换歌曲',
       'tlImport': '导入原片',
       'tlKeep': '保留原片',
@@ -2267,6 +2273,12 @@ function revealCanvasInRight() {
       'tlStepConfirm': 'Confirm sections',
       'tlStepStyle': 'Style and timeline',
       'tlStepPush': 'Push to canvas',
+      'tlAgent': 'Assistant',
+      'tlAgentPh': 'Tell the assistant, for example: make a funny MV',
+      'tlAgentAuto': 'Auto',
+      'tlAgentConfirm': 'Confirm',
+      'tlAgentRevise': 'Change',
+      'tlAgentSpend': 'Will generate',
       'tlReplaceAudio': 'Replace song',
       'tlImport': 'Import source MV',
       'tlKeep': 'Keep original',
@@ -3057,7 +3069,14 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-edge.kind-video{stroke:var(--dsw-alias-state-success-primary);}
 .dshic-edge.kind-audio{stroke:var(--dsw-alias-state-warn-primary);}
 .dshic-audio{width:100%;height:36px;display:block;}
-.dshic-mtl{display:flex;flex-direction:column;height:100%;min-height:0;background:#111;color:#f2f2f2;border-radius:0 0 12px 12px;overflow:hidden;}
+.dshic-mtl{display:flex;flex-direction:column;height:100%;min-height:0;background:#111;color:#f2f2f2;border-radius:0 0 12px 12px;overflow:hidden;position:relative;}
+.dshic-mtl-agent{position:absolute;top:28px;right:0;bottom:0;width:280px;background:#161616;border-left:1px solid #2a2a2a;display:flex;flex-direction:column;z-index:5;}
+.dshic-mtl-agent-log{flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:6px;}
+.dshic-mtl-agent-msg{background:#111;color:#eee;border-radius:8px;padding:6px 8px;font-size:12px;line-height:1.45;white-space:pre-wrap;}
+.dshic-mtl-agent-msg.is-user{background:#1c1c1c;}
+.dshic-mtl-agent-card{background:#111;border:1px solid #333;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;}
+.dshic-mtl-agent-form{display:flex;gap:4px;padding:8px;border-top:1px solid #2a2a2a;}
+.dshic-mtl-agent-form input{flex:1;min-width:0;height:28px;background:#111;color:#eee;border:1px solid #333;border-radius:6px;padding:0 8px;}
 .dshic-mtl-preview{flex:1;min-height:120px;background:#000;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;}
 .dshic-mtl-modes{flex:none;display:flex;background:#161616;border-bottom:1px solid #2a2a2a;}
 .dshic-mtl-modes button{flex:1;height:28px;border:0;background:#161616;color:#aaa;cursor:pointer;font-size:12px;}
@@ -14907,6 +14926,8 @@ function queueThumb(assetId) {
       const [castName, setCastName] = useState('');
       const [tab, setTab] = useState('overview');
       const [mode, setMode] = useState('create');
+      const [agentOpen, setAgentOpen] = useState(false);
+      const [agentDraft, setAgentDraft] = useState('');
       const [viewW, setViewW] = useState(640);
       const scrollRef = useRef(null);
       const chrome = musicTimelineChrome({
@@ -15232,6 +15253,60 @@ function queueThumb(assetId) {
         if (!vid) { toast(T('tlPush')); return; }
         await runGenNode(vid);
       };
+      const askAssistant = async (message, extra) => {
+        const text = String(message || '').trim();
+        if (!text && !(extra && extra.confirmed)) return;
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (!nd) return;
+          const chat = Array.isArray(nd.data.assistantChat) ? nd.data.assistantChat : [];
+          nd.data.assistantChat = chat.concat([{ role: 'user', text }]).slice(-40);
+        });
+        setAgentDraft('');
+        setBusy('agent');
+        try {
+          await flushSave();
+          const r = await hostRpc('audioAssistantTurn', {
+            projectId: S.activeId, nodeId: n.id, message: text, mode,
+            confirmed: !!(extra && extra.confirmed),
+            modelText: (extra && extra.modelText) || '',
+          });
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (!nd) return;
+            if (r && r.styleText) nd.data.styleText = r.styleText;
+            if (r && r.analysis) nd.data.analysis = r.analysis;
+            if (r && r.sectionsConfirmed) nd.data.sectionsConfirmed = true;
+            if (r && r.package) nd.data.mvPackage = r.package;
+            const say = (r && r.modelError ? ((r.say || '') + '\n' + r.modelError) : (r && r.say)) || '';
+            const chat = Array.isArray(nd.data.assistantChat) ? nd.data.assistantChat : [];
+            nd.data.assistantChat = chat.concat([{
+              role: 'agent', text: say,
+              card: r && r.needsConfirm ? { pending: r.pending, preview: r.preview } : null,
+              modelError: (r && r.modelError) || '',
+            }]).slice(-40);
+          });
+          if (r && !r.needsConfirm && r.clientJob === 'analyze') await startAnalyze();
+          else if (r && !r.needsConfirm && r.clientJob === 'push') await pushCanvas();
+          else if (r && !r.needsConfirm && r.clientJob === 'generate') {
+            if (r.args && r.args.scope === 'one') await genSceneAt(Number(r.args.sceneIndex) || 0);
+            else await genAll();
+          } else if (r && !r.needsConfirm && r.clientJob === 'compose') {
+            const cut = owned().find((nd) => nd.type === 'finalcut');
+            if (cut) await runGenNode(cut);
+          } else if (r && !r.needsConfirm && r.clientJob === 'remix') {
+            const el = vidFileRef.current;
+            if (el) el.click();
+          }
+        } catch (e) {
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (!nd) return;
+            const chat = Array.isArray(nd.data.assistantChat) ? nd.data.assistantChat : [];
+            nd.data.assistantChat = chat.concat([{ role: 'agent', text: String((e && e.message) || e), modelError: 'llm' }]).slice(-40);
+          });
+        } finally { setBusy(''); }
+      };
       const genSceneAt = async (index) => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
         const imgs = owned().filter((nd) => nd.type === 'image' && nd.data && nd.data.mvIndex === index && !String(nd.data.mvKey || '').includes(':src:'));
@@ -15381,7 +15456,8 @@ function queueThumb(assetId) {
         h('input', { ref: vidFileRef, type: 'file', accept: 'video/*,.mp4,.mov,.webm', style: { display: 'none' }, onChange: importSource }),
         h('div', { className: 'dshic-mtl-modes' },
           h('button', { type: 'button', className: mode === 'create' ? 'is-on' : '', 'data-tl-mode-create': '1', onClick: () => setMode('create') }, T('tlModeCreate')),
-          h('button', { type: 'button', className: mode === 'remix' ? 'is-on' : '', 'data-tl-mode-remix': '1', onClick: () => setMode('remix') }, T('tlModeRemix'))),
+          h('button', { type: 'button', className: mode === 'remix' ? 'is-on' : '', 'data-tl-mode-remix': '1', onClick: () => setMode('remix') }, T('tlModeRemix')),
+          h('button', { type: 'button', className: agentOpen ? 'is-on' : '', 'data-tl-agent': '1', onClick: () => setAgentOpen((v) => !v) }, T('tlAgent'))),
         url ? h('audio', {
           ref: audioRef, src: url, preload: 'metadata',
           onLoadedMetadata: (e) => {
@@ -15597,7 +15673,32 @@ function queueThumb(assetId) {
             }, l.text || '')))),
             h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '◎'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, scenes.map((sc, i) => block(sc, i, 'cont')))),
             h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '🎞'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, scenes.map((sc, i) => block(sc, i, 'shot')))),
-            h('div', { className: 'dshic-mtl-playhead', style: { left: 22 + (dur ? (time / dur) * px : 0) } }))));
+            h('div', { className: 'dshic-mtl-playhead', style: { left: 22 + (dur ? (time / dur) * px : 0) } }))),
+        agentOpen ? h('aside', { className: 'dshic-mtl-agent', 'data-tl-agent-panel': '1' },
+          h('div', { className: 'dshic-mtl-agent-log' },
+            ((n.data && n.data.assistantChat) || []).map((msg, i) => h('div', { key: 'c' + i, className: 'dshic-mtl-agent-msg' + (msg.role === 'user' ? ' is-user' : '') },
+              msg.text || '',
+              msg.modelError ? h('div', null, h('button', { type: 'button', className: 'dshic-mini', onClick: () => openStudioModal('settings') }, T('tlOpenSettings'))) : null,
+              msg.card ? h('div', { className: 'dshic-mtl-agent-card' },
+                T('tlAgentSpend') + ' ' + ((msg.card.preview && msg.card.preview.count) || 0) + ' · ' + ((msg.card.preview && msg.card.preview.seconds) || 0) + 's',
+                h('div', null,
+                  h('button', {
+                    type: 'button', className: 'dshic-mtl-go',
+                    onClick: () => askAssistant(T('tlAgentConfirm'), {
+                      confirmed: true,
+                      modelText: JSON.stringify({ say: T('tlAgentConfirm'), tool: msg.card.pending && msg.card.pending.tool, args: (msg.card.pending && msg.card.pending.args) || {} }),
+                    }),
+                  }, T('tlAgentConfirm')),
+                  ' ',
+                  h('button', { type: 'button', className: 'dshic-mini', onClick: () => setAgentDraft('') }, T('tlAgentRevise')))) : null))),
+          h('div', { className: 'dshic-mtl-agent-form' },
+            h('input', {
+              'data-tl-agent-input': '1', value: agentDraft, placeholder: T('tlAgentPh'),
+              onChange: (e) => setAgentDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') askAssistant(agentDraft); },
+            }),
+            h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => askAssistant(agentDraft) }, T('tlAgent')),
+            h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => askAssistant('继续自动') }, T('tlAgentAuto')))) : null);
     }
     function nodeBody(n, edgeSig) {
       // 兜底：文档入口已归一，但历史上存进撤销快照/外部注入的节点类型仍可能是旧名
