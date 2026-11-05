@@ -23,6 +23,7 @@ import {
   planMusicVideoPackage,
   stampGeneration,
   snapGenerationDuration,
+  adaptGenAttempt,
   mergeCreative,
   analysisIsThin,
   llmCreativeUserPrompt,
@@ -3778,7 +3779,7 @@ async function ensureMusicPackage(analysis, args, completeFn) {
       try {
         const res = await completeFn({
           system: '你是音乐 MV 导演。只返回 JSON，不要改时间码，不要写散文摘要代替分镜。',
-          user: llmCreativeUserPrompt(pkg) + (style ? ('\n用户想要的风格：' + style) : ''),
+          user: llmCreativeUserPrompt(pkg) + (style ? ('\n用户想要的风格：' + style) : '') + (args && args.retryNote ? ('\n上次失败后的调整：' + String(args.retryNote).slice(0, 400)) : ''),
           temperature: 0.4,
         });
         const text = res && typeof res === 'object' ? res.text : String(res || '');
@@ -4660,6 +4661,22 @@ export function apply(ctx) {
       async audioProgress(args) {
         return { ok: true, progress: readOmniProgress(args && args.id) };
       },
+      async generationPlan(args) {
+        const a = args || {};
+        const message = String(a.message || '');
+        let rewrittenPrompt = '';
+        if (/审核|敏感|违规|moderat|safety|policy|nsfw|不合规|色情/i.test(message)) {
+          try {
+            const r = await completeMvText({
+              system: '改写这条提示词，去掉可能被审核拒绝的部分，保留画面意图。只返回改写后的提示词本身。',
+              user: String((a.params && a.params.prompt) || ''),
+              phase: 'adapt',
+            });
+            rewrittenPrompt = String((r && r.text) || '').trim();
+          } catch { rewrittenPrompt = ''; }
+        }
+        return { ok: true, plan: adaptGenAttempt({ message, status: a.status, params: a.params, history: a.history, rewrittenPrompt }) };
+      },
       async audioRemix(args) {
         return canvasMusicRemix(args || {});
       },
@@ -4797,6 +4814,7 @@ export function apply(ctx) {
         let modelError = '';
         let modelDetail = '';
         let reasoning = '';
+        let clientJob = '';
         const scopeId = String((args && args.scopeId) || '');
         const runOne = async (action) => {
           const result = await dispatchCanvasAssistant(action.tool, {
@@ -4814,7 +4832,10 @@ export function apply(ctx) {
           });
           return result;
         };
-        if (confirmed && args && args.pending && args.pending.tool) {
+        if (confirmed && args && args.pending && args.pending.clientJob && !args.pending.tool) {
+          clientJob = String(args.pending.clientJob);
+          say = args.pending.say || '开始重生成失败项。';
+        } else if (confirmed && args && args.pending && args.pending.tool) {
           const pending = args.pending;
           const gate = gateCanvasAction(pending, { confirmed: true, digest, modelLabel: route.label });
           if (gate.allow) {
@@ -4909,6 +4930,17 @@ export function apply(ctx) {
             }
             let action = parseCanvasAction(raw) || parseCanvasAction(modelText);
             if (!action && step === 0) action = keywordCanvasAction(userMsg, digest, scopeId);
+            if (action && action.clientJob && !action.tool) {
+              const gate = gateCanvasAction(action, { confirmed: false, digest, modelLabel: route.label });
+              if (!gate.allow) {
+                blocked = { clientJob: action.clientJob, tool: '', args: action.args || {}, say: gate.say, preview: gate.preview || null };
+                say = gate.say;
+                break;
+              }
+              clientJob = action.clientJob;
+              say = action.say || gate.say;
+              break;
+            }
             if (!action || !action.tool) {
               say = (action && action.say) || modelText || modelError || '可以说要新建、修改、连线、生成，或把一首歌做成 MV。';
               break;
@@ -4966,6 +4998,7 @@ export function apply(ctx) {
           modelLabel: route.label,
           planner: route.route,
           reasoning,
+          clientJob: clientJob || null,
           chat,
         };
       },

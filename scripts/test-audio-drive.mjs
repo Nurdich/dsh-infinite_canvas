@@ -380,6 +380,43 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(!/无文字/.test(AD.presentImagePrompt('角色，无文字')), '可见提示词没有去掉无文字');
 }
 
+// ---------- 失败后再生成：先分类，再改参数 ----------
+{
+  ok(AD.classifyGenFailure('DataInspectionFailed: sexual content', 400) === 'moderation', '审核失败没有归到内容审核');
+  ok(AD.classifyGenFailure('Insufficient Balance', 400) === 'balance', '余额不足不应再试');
+  ok(AD.classifyGenFailure('Unauthorized', 401) === 'auth', '401 应停在密钥');
+  ok(AD.classifyGenFailure('prompt is too long', 400) === 'long', '过长提示词没有识别');
+  ok(AD.classifyGenFailure('duration 20 is unsupported', 400) === 'duration', '不支持的时长没有识别');
+  ok(AD.classifyGenFailure('aspect ratio is not supported', 400) === 'resolution', '比例不支持没有识别');
+  ok(AD.classifyGenFailure('image too large', 400) === 'ref', '参考过大没有识别');
+  ok(AD.classifyGenFailure('HTTP 503', 503) === 'transient' && AD.classifyGenFailure('429 rate limit', 429) === 'transient', '超时和 5xx/429 应原参数再试');
+  ok(AD.classifyGenFailure('无法解析 JSON', 200) === 'empty', '空结果或乱码应加严');
+  ok(AD.classifyGenFailure('完全没见过的错', 400) === 'unknown', '未知原因应先原样再试一次');
+  const safe = AD.adaptGenAttempt({ message: '内容审核未通过 nude', params: { prompt: '裸体的人站在雨里' } });
+  ok(safe.kind === 'moderation' && safe.auto && /服装完整/.test(safe.params.prompt) && safe.change === '已改写提示词以通过审核', '审核失败没有改写提示词：' + safe.params.prompt);
+  const llm = AD.adaptGenAttempt({ message: 'safety policy', params: { prompt: '原提示' }, rewrittenPrompt: '改成穿外套的人' });
+  ok(llm.params.prompt === '改成穿外套的人', '有模型改写时应该用模型的句子');
+  const dur = AD.adaptGenAttempt({ message: 'duration is unsupported', params: { duration: 20, allowedDurations: [4, 5, 6, 8, 10, 12, 15] } });
+  ok(dur.params.duration === 15 && dur.change === '时长 20s→15s', '时长没有收到允许档：' + dur.change);
+  const long = AD.adaptGenAttempt({ message: 'prompt too long', params: { prompt: '甲'.repeat(900) } });
+  ok(long.kind === 'long' && long.params.prompt.length < 900 && /字/.test(long.change), '过长提示词没有缩短');
+  const again = AD.adaptGenAttempt({ message: '完全没见过的错', params: { prompt: '保持' }, history: [{ kind: 'unknown', auto: true }] });
+  ok(again.auto === false && /停止/.test(again.say), '未知原因原样试过一次后还应继续');
+  const capped = AD.adaptGenAttempt({ message: 'duration is unsupported', params: { duration: 20 }, history: [{ auto: true }, { auto: true }] });
+  ok(capped.auto === false, '自动改参数超过 2 次还应继续');
+  const pay = AD.adaptGenAttempt({ message: '余额不足', params: { prompt: 'x' } });
+  ok(pay.auto === false && pay.kind === 'balance', '余额不足仍会自动重试');
+  const digest = AD.canvasDigest({ nodes: { a: { id: 'a', type: 'video', data: { label: '段1', status: 'error', adapt: { kind: 'duration', say: '时长不对', change: '时长 20s→15s' } } } } }, ['a']);
+  ok(digest.nodes[0].failure && digest.nodes[0].failure.change === '时长 20s→15s', '画布摘要没有带上失败原因');
+  const why = AD.keywordCanvasAction('为什么失败', digest, 'a');
+  ok(/时长不对/.test(why.say) && !why.tool, '助手没有解释失败原因');
+  const redo = AD.keywordCanvasAction('重生成失败项', digest);
+  ok(redo.clientJob === 'regen-failed' && redo.spends === true, '重生成失败项没有标成要确认的生成');
+  const gated = AD.gateCanvasAction(redo, { digest });
+  ok(gated.allow === false && gated.preview && gated.preview.count === 1, '花钱的失败重跑没有确认');
+  ok(AD.gateCanvasAction(redo, { digest, confirmed: true }).allow === true, '确认后失败重跑仍被拦住');
+}
+
 // ---------- 听歌超时、重试、流式增量 ----------
 {
   const short = AD.analysisBudget({ durationSec: 30 });
