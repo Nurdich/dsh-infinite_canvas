@@ -273,7 +273,7 @@ function revealCanvasInRight() {
     //   · 标题栏是拖动/重命名区、底部操作栏是按钮区，都不弹面板；
     //   · 拖动只从标题栏 / 节点空白（非内容区）发起。
     const NODE_CONTENT_SELECTOR = '[data-node-content]';
-    const NODE_NON_OPEN_SELECTOR = '[data-node-head],[data-node-foot]';
+    const NODE_NON_OPEN_SELECTOR = '[data-node-head],[data-node-foot],[data-music-tl]';
     function isNodeContentTarget(t) {
       return !!(t && typeof t.closest === 'function' && t.closest(NODE_CONTENT_SELECTOR));
     }
@@ -1160,6 +1160,60 @@ function revealCanvasInRight() {
       'audioLocal': '本地节拍',
       'audioModel': '模型',
       'audioMock': '占位',
+      'tlUndo': '撤销',
+      'tlRedo': '重做',
+      'tlPlay': '播放',
+      'tlPause': '暂停',
+      'tlSub': '字幕',
+      'tlFilter': '滤镜',
+      'tlStylePh': '我想要……风格的 MV',
+      'tlGenerate': '生成时间轴',
+      'tlPush': '推到画布',
+      'tlGenAll': '生成全部',
+      'tlZoom': '缩放',
+      'tlStory': '剧情',
+      'tlCast': '角色',
+      'tlCam': '镜头',
+      'tlImgPrompt': '关键帧',
+      'tlVidPrompt': '视频提示词',
+      'tlDur': '时长',
+      'tlStale': '已过期',
+      'tlRegen': '重生成此段',
+      'tlRegenStale': '重生成过期段',
+      'tlTakes': '备选',
+      'tlGenDur': '生成时长',
+      'tlImport': '导入原片',
+      'tlKeep': '保留原片',
+      'tlJoin': '转场',
+      'tlRefs': '参考',
+      'tlCut': '硬切',
+      'tlCont': '续帧',
+      'tlRemix': '翻拍',
+      'tlDrift': '不一致',
+      'tlLock': '风格锁',
+      'tlSource': '原片',
+      'tlOverview': '总览',
+      'tlScript': '剧本',
+      'tlRoles': '角色',
+      'tlPlaces': '场景',
+      'tlNoCast': '这首歌没有绑定角色，可以做成表演或抽象画面',
+      'tlNoPlace': '还没有场景',
+      'tlFace': '面孔',
+      'tlCasting': '选角',
+      'tlMain': '主图',
+      'tlViews': '多视角',
+      'tlBlocked': '缺主图',
+      'tlSubTrack': '字幕在时间轴上，合成时不烧进画面',
+      'subSilver': 'SilverScreen',
+      'subPlain': '纯白',
+      'subNone': '无',
+      'fltNone': '无',
+      'fltWarm': '暖调',
+      'fltCool': '冷调',
+      'fltContrast': '高反差',
+      'tlPresetBj': '北京',
+      'tlPresetSg': '新加坡',
+      'tlPresetIntl': '国际',
       'composerAudio': '听完整首歌，抽出节奏、段落和画面',
       'audioSoundtrackDrift': '成片使用了原曲声轨。转场不是「无」时，声画可能慢慢错位',
       'close': '关闭',
@@ -2142,6 +2196,60 @@ function revealCanvasInRight() {
       'audioLocal': 'Local beats',
       'audioModel': 'Model',
       'audioMock': 'Placeholder',
+      'tlUndo': 'Undo',
+      'tlRedo': 'Redo',
+      'tlPlay': 'Play',
+      'tlPause': 'Pause',
+      'tlSub': 'Subtitles',
+      'tlFilter': 'Filter',
+      'tlStylePh': 'I want a … style MV',
+      'tlGenerate': 'Build timeline',
+      'tlPush': 'Push to canvas',
+      'tlGenAll': 'Generate all',
+      'tlZoom': 'Zoom',
+      'tlStory': 'Story',
+      'tlCast': 'Cast',
+      'tlCam': 'Shot',
+      'tlImgPrompt': 'Keyframe',
+      'tlVidPrompt': 'Video prompt',
+      'tlDur': 'Duration',
+      'tlStale': 'Stale',
+      'tlRegen': 'Regenerate block',
+      'tlRegenStale': 'Regenerate stale',
+      'tlTakes': 'Takes',
+      'tlGenDur': 'Gen length',
+      'tlImport': 'Import source MV',
+      'tlKeep': 'Keep original',
+      'tlJoin': 'Transition',
+      'tlRefs': 'Refs',
+      'tlCut': 'Hard cut',
+      'tlCont': 'Continuous',
+      'tlRemix': 'Remix',
+      'tlDrift': 'Drift',
+      'tlLock': 'Style lock',
+      'tlSource': 'Source',
+      'tlOverview': 'Overview',
+      'tlScript': 'Script',
+      'tlRoles': 'Cast',
+      'tlPlaces': 'Scenes',
+      'tlNoCast': 'No characters bound. This can stay a performance or abstract video',
+      'tlNoPlace': 'No locations yet',
+      'tlFace': 'Face',
+      'tlCasting': 'Casting',
+      'tlMain': 'Main',
+      'tlViews': 'Views',
+      'tlBlocked': 'No main image',
+      'tlSubTrack': 'Subtitles stay on the timeline and are not burned in',
+      'subSilver': 'SilverScreen',
+      'subPlain': 'Plain',
+      'subNone': 'None',
+      'fltNone': 'None',
+      'fltWarm': 'Warm',
+      'fltCool': 'Cool',
+      'fltContrast': 'Contrast',
+      'tlPresetBj': 'Beijing',
+      'tlPresetSg': 'Singapore',
+      'tlPresetIntl': 'Intl',
       'composerAudio': 'Listen to the whole song and pull rhythm, sections, and images',
       'audioSoundtrackDrift': 'The final cut uses the song as soundtrack. A transition other than none can drift from the picture',
       'close': 'Close',
@@ -2899,6 +3007,44 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-edge.kind-video{stroke:var(--dsw-alias-state-success-primary);}
 .dshic-edge.kind-audio{stroke:var(--dsw-alias-state-warn-primary);}
 .dshic-audio{width:100%;height:36px;display:block;}
+.dshic-mtl{display:flex;flex-direction:column;height:100%;min-height:0;background:#111;color:#f2f2f2;border-radius:0 0 12px 12px;overflow:hidden;}
+.dshic-mtl-preview{flex:1;min-height:120px;background:#000;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;}
+.dshic-mtl-preview img,.dshic-mtl-preview video{width:100%;height:100%;object-fit:contain;background:#000;}
+.dshic-mtl-caption{max-width:78%;text-align:center;font-size:13px;line-height:1.55;color:#d5d5d5;letter-spacing:.04em;}
+.dshic-mtl-caption.is-plain{letter-spacing:0;color:#fff;}
+.dshic-mtl-transport{flex:none;height:36px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#161616;border-top:1px solid #2a2a2a;}
+.dshic-mtl-time{font-variant-numeric:tabular-nums;font-size:12px;color:#ddd;min-width:40px;}
+.dshic-mtl-play{width:28px;height:28px;border-radius:50%;border:0;background:#f2f2f2;color:#111;cursor:pointer;font-size:12px;}
+.dshic-mtl-ico{width:22px;height:22px;border:0;background:#111;color:#ddd;cursor:pointer;border-radius:4px;}
+.dshic-mtl-select{height:24px;background:#111;color:#ddd;border:1px solid #333;border-radius:6px;font-size:11px;max-width:140px;}
+.dshic-mtl-style{flex:none;display:flex;gap:6px;align-items:center;padding:6px 8px;background:#161616;border-top:1px solid #2a2a2a;}
+.dshic-mtl-style input{flex:1;min-width:0;height:26px;background:#111;color:#eee;border:1px solid #333;border-radius:6px;padding:0 8px;font-size:12px;}
+.dshic-mtl-inspector{flex:none;max-height:108px;overflow:auto;display:grid;grid-template-columns:72px 1fr;gap:4px 8px;padding:6px 10px;background:#141414;border-top:1px solid #2a2a2a;font-size:11px;}
+.dshic-mtl-inspector textarea,.dshic-mtl-inspector input{width:100%;background:#111;color:#eee;border:1px solid #333;border-radius:6px;font-size:11px;padding:4px 6px;}
+.dshic-mtl-meta{flex:none;display:flex;align-items:center;gap:8px;padding:4px 8px;background:#121212;font-size:11px;color:#aaa;}
+.dshic-mtl-scroll{flex:none;height:210px;overflow:auto;background:#101010;position:relative;}
+.dshic-mtl-ruler{height:18px;position:relative;color:#888;font-size:10px;border-bottom:1px solid #2a2a2a;}
+.dshic-mtl-track{height:32px;position:relative;border-bottom:1px solid #222;display:flex;}
+.dshic-mtl-gutter{width:22px;flex:none;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:12px;background:#161616;}
+.dshic-mtl-lane{position:relative;flex:1;min-width:0;height:100%;}
+.dshic-mtl-block{position:absolute;top:4px;height:24px;border-radius:4px;overflow:hidden;font-size:10px;line-height:24px;padding:0 6px;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;box-sizing:border-box;}
+.dshic-mtl-block.is-ai{background:#2a2a2a;color:#eee;border:1px solid #3a3a3a;}
+.dshic-mtl-block.is-lyric{background:#17815a;color:#fff;}
+.dshic-mtl-block.is-shot{background:#3a2460;color:#f3e9ff;border:1px solid #5a3d86;}
+.dshic-mtl-block.is-keep{background:#2a2a2a;color:#ddd;border:1px dashed #666;}
+.dshic-mtl-block.is-stale{box-shadow:inset 3px 0 0 #e0b341;}
+.dshic-mtl-block.is-drift{box-shadow:inset 0 0 0 1px #e0b341;}
+.dshic-mtl-preview.is-warm{filter:sepia(.35);}
+.dshic-mtl-preview.is-cool{filter:saturate(.75) hue-rotate(18deg);}
+.dshic-mtl-preview.is-contrast{filter:contrast(1.25);}
+.dshic-node-body.is-timeline{padding:0;gap:0;overflow:hidden;}
+.dshic-mtl-doc{flex:none;height:210px;overflow:auto;background:#101010;color:#ddd;padding:8px 10px;font-size:11px;white-space:pre-wrap;}
+.dshic-mtl-tabs{display:flex;gap:4px;}
+.dshic-mtl-tabs button.is-on{background:#f2f2f2;color:#111;}
+.dshic-mtl-block.is-on{outline:1px solid #fff;}
+.dshic-mtl-wave{position:absolute;inset:0;background:#5b46e8;}
+.dshic-mtl-playhead{position:absolute;top:0;bottom:0;width:1px;background:#fff;pointer-events:none;z-index:3;}
+.dshic-mtl-resize{position:absolute;right:0;top:0;width:6px;height:100%;cursor:ew-resize;}
 .dshic-edge.is-selected{stroke-width:3.5;filter:drop-shadow(0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 60%,transparent));}
 /* 选中节点的连线高亮：亮绿 + 双层外发光（固定高对比色，选中态不随主题变化） */
 .dshic-edge.is-node-linked{stroke:#2fe08a;stroke-width:2.6;filter:drop-shadow(0 0 3px rgba(47,224,138,.95)) drop-shadow(0 0 9px rgba(47,224,138,.5));}
@@ -8505,11 +8651,12 @@ function queueThumb(assetId) {
       let t = 0;
       const out = [];
       items.forEach((it, i) => {
-        const start = t;
-        t += it.dur;
-        const text = String(it.sub || '').trim();
-        if (!text) return;
-        out.push((i + 1) + '\n' + fmt(start) + ' --> ' + fmt(t) + '\n' + text + '\n');
+        const start = it.startSec != null ? Number(it.startSec) : t;
+        const end = it.endSec != null ? Number(it.endSec) : (start + (Number(it.dur) || 0));
+        if (it.startSec == null) t = end;
+        const text = String(it.text || it.sub || '').trim();
+        if (!text || !(end > start)) return;
+        out.push((out.length + 1) + '\n' + fmt(start) + ' --> ' + fmt(end) + '\n' + text + '\n');
       });
       return out.join('\n');
     }
@@ -9962,6 +10109,7 @@ function queueThumb(assetId) {
       }
       if (type === 'audio') {
         data.assetId = null; data.analysis = null; data.audioModel = ''; data.status = 'idle';
+        data.styleText = ''; data.mvPackage = null; data.subStyle = 'silverscreen'; data.mvFilter = 'none';
       }
       if (type === 'group') {
         data.members = []; data.collapsed = false; data.hidden = false;
@@ -9973,6 +10121,7 @@ function queueThumb(assetId) {
       if (type === 'image' || type === 'video') {
         size = nodeSizeForRatio(data.ratio, { hasFooter: false });
       }
+      if (type === 'audio') size = { w: 920, h: 600 };
       return {
         id: uid('n'), type,
         x: Math.round(pos.x), y: Math.round(pos.y),
@@ -10450,15 +10599,17 @@ function queueThumb(assetId) {
       shots.forEach((s, i) => {
         const dur = durOf(s);
         const parts = [];
-        if (String(s.visual || '').trim()) parts.push(String(s.visual).trim());
-        if (String(s.motion || '').trim()) parts.push((zh ? '运镜/动作：' : 'Camera/Action: ') + String(s.motion).trim());
+        const readyPrompt = String(s.videoPrompt || '').trim();
+        if (readyPrompt) parts.push(readyPrompt);
+        else if (String(s.visual || '').trim()) parts.push(String(s.visual).trim());
+        if (!readyPrompt && String(s.motion || '').trim()) parts.push((zh ? '运镜/动作：' : 'Camera/Action: ') + String(s.motion).trim());
         // 动作三节拍：这是"动作极简、只会平移"的直接解药——不写节拍，模型只演一个姿势
         const beats = Array.isArray(s.timeBeats) ? s.timeBeats.filter((b) => String(b || '').trim()) : [];
         if (beats.length) {
           parts.push((zh ? '动作节拍（按时间推进，不可省略任何一拍）' : 'Action beats (in order, none may be skipped)') + '：' + beats.join(zh ? ' → ' : ' -> '));
         }
         const cam = String(s.camera || '').trim();
-        if (cam) parts.push((zh ? '机位/焦段/运镜' : 'Camera/lens/move') + '：' + cam);
+        if (!readyPrompt && cam) parts.push((zh ? '机位/焦段/运镜' : 'Camera/lens/move') + '：' + cam);
         const vfx = String(s.vfx || '').trim();
         if (vfx) parts.push((zh ? '特效（必须可见）' : 'VFX (must be visible)') + '：' + vfx);
         const dls = (s.dialogue || []).map((d) => String(d && d.role || '').trim() + '：' + String(d && d.line || '').trim()).filter((x) => x.replace('：', '').trim());
@@ -10735,6 +10886,7 @@ function queueThumb(assetId) {
           nd.data.status = 'done';
           nd.data.error = null;
           nd.data.durationSec = body.analysis.durationSec || durationSec || null;
+          if (energy && energy.length) nd.data.peaks = energy.slice(0, 240);
         }
         s.assetsTick++;
       });
@@ -10810,7 +10962,9 @@ function queueThumb(assetId) {
         .filter((x) => x.nd)
         .sort((a, b) => (a.nd.y - b.nd.y) || (a.nd.x - b.nd.x));
       if (!segs.length) throw new Error(T('noSegments'));
+      const burnSubs = n.data.burnSubtitles !== false;
       const getSub = (x) => {
+        if (!burnSubs) return '';
         const defSub = isVideoLike(x.nd) ? (x.nd.data.prompt || '') : (x.nd.data.label || TYPE_LABEL()[x.nd.type]);
         const v = n.data.subs && n.data.subs[x.e.id];
         return v != null ? v : defSub;
@@ -10901,8 +11055,23 @@ function queueThumb(assetId) {
       }
     }
 
+    function mvRefBlock(n) {
+      if (!n || n.type !== 'video' || !n.data || !n.data.mvFrom) return '';
+      const audio = S.graph.nodes[n.data.mvFrom];
+      const sc = audio && audio.data && audio.data.mvPackage && audio.data.mvPackage.scenes && audio.data.mvPackage.scenes[n.data.mvIndex];
+      if (!sc) return '';
+      if (sc.awaitingConfirm) return '这一镜的提示词还等确认，确认前不生成';
+      const names = (sc.refs && sc.refs.locations) || [];
+      for (const name of names) {
+        const img = Object.values(S.graph.nodes).find((nd) => nd && nd.type === 'image' && nd.data && nd.data.mvFrom === n.data.mvFrom && nd.data.label === name);
+        if (img && !img.data.assetId) return '场景「' + name + '」还没有主图，先生成场景图再生成这一镜';
+      }
+      return '';
+    }
     async function runGenNode(n) {
       const type = n.type;
+      const blocked = mvRefBlock(n);
+      if (blocked) throw new Error(blocked);
       const settings = loadSettings(); // 模型解析（供应商+模型）用
       const ctl = new AbortController();
       genAbort.ctl = ctl;
@@ -10920,7 +11089,14 @@ function queueThumb(assetId) {
       };
       update((s) => {
         const nd = s.graph.nodes[n.id];
-        if (nd) { nd.data.status = 'running'; nd.data.error = null; nd.data.stopNote = null; nd.data.genWarn = null; }
+        if (nd) {
+          nd.data.status = 'running'; nd.data.error = null; nd.data.stopNote = null; nd.data.genWarn = null;
+          if (nd.data.mvFrom && nd.type === 'video') {
+            const audio = s.graph.nodes[nd.data.mvFrom];
+            const sc = audio && audio.data && audio.data.mvPackage && audio.data.mvPackage.scenes && audio.data.mvPackage.scenes[nd.data.mvIndex];
+            if (sc) sc.gen = Object.assign({}, sc.gen || {}, { status: 'generating', stale: false });
+          }
+        }
         s.running = true; // 单节点触发（对话/节点按钮）也显示停止按钮
       });
       flushSave(); // 立刻落盘 + 推送 Host：切走画面/对话查询都能看到"运行中"
@@ -11252,6 +11428,22 @@ function queueThumb(assetId) {
           // 媒体历史：保留最近 8 次结果，可在节点内切换
           const h = [{ assetId, ts: Date.now() }].concat(nd.data.history || []);
           nd.data.history = h.filter((x, i, arr) => arr.findIndex((y) => y.assetId === x.assetId) === i).slice(0, 8);
+          if (nd.data.mvFrom) {
+            nd.data.mvStale = false;
+            nd.data.refBlocked = '';
+            const audio = s.graph.nodes[nd.data.mvFrom];
+            const sc = audio && audio.data && audio.data.mvPackage && audio.data.mvPackage.scenes && audio.data.mvPackage.scenes[nd.data.mvIndex];
+            if (sc) {
+              sc.gen = Object.assign({}, sc.gen || {}, { status: 'done', stale: false, assetId, history: nd.data.history });
+            }
+            if (nd.type === 'image' && audio && audio.data && audio.data.mvPackage) {
+              const locs = audio.data.mvPackage.locations || [];
+              const main = locs.find((l) => l.name === nd.data.label);
+              if (main) main.hasMain = true;
+              const multi = locs.find((l) => l.name + '·多视角' === nd.data.label);
+              if (multi) multi.hasMultiView = true;
+            }
+          }
           // 生成的图片/视频节点：节点外框 = 预览区（按画面比例，短边 360、长边 ≤800）+ 标题栏 + 操作栏
           if (nd.type === 'image' || nd.type === 'video') {
             const sz = nodeSizeForRatio(mediaRatioOf(nd), { hasFooter: true });
@@ -12077,7 +12269,8 @@ function queueThumb(assetId) {
           if (isMedia) {
             const sz = nodeSizeForRatio(mediaRatioOf(nd), { hasFooter: mediaHasFooter(nd) });
             nd.w = sz.w; nd.h = sz.h;
-          } else nd.h = NODE_H;
+          } else if (nd.type === 'audio') { nd.w = 920; nd.h = 600; }
+          else nd.h = NODE_H;
         });
         pushHistory();
       };
@@ -12144,7 +12337,7 @@ function queueThumb(assetId) {
         // 预览区 flex:1 吃掉剩余高度 —— 剩余高度正是 sizeForRatio 算出的画面盒。
         // 非媒体节点：body 整体就是内容区（data-node-content），点正文/清单/配置区打开面板。
         h('div', {
-          className: cls('dshic-node-body', isMedia && 'is-media', !isMedia && isTextual && 'is-textual'),
+          className: cls('dshic-node-body', isMedia && 'is-media', !isMedia && isTextual && 'is-textual', nt === 'audio' && 'is-timeline'),
           ...(isMedia ? null : { 'data-node-content': '1' }),
         },
           ...(isMedia ? [headEl, nodeBody(n, edgeSig)] : [nodeBody(n, edgeSig)])),
@@ -14332,7 +14525,8 @@ function queueThumb(assetId) {
         const outRel = 'craft/out/final.mp4'; // 相对 base
         try {
           await craft.writeText(base, 'craft/timeline.xml', xml);
-          await craft.writeText(base, 'craft/subs.srt', buildSrt(items));
+          const srtItems = (Array.isArray(n.data.subtitleTrack) && n.data.subtitleTrack.length) ? n.data.subtitleTrack : items;
+          await craft.writeText(base, 'craft/subs.srt', buildSrt(srtItems));
         } catch (e) { return; /* craftFetch 已提示 */ }
         setFcDialog({
           // args 里一律绝对路径（job 的 cwd 语义不依赖）
@@ -14349,6 +14543,9 @@ function queueThumb(assetId) {
         }).catch(() => { /* craftFetch 已提示 */ });
       };
       return [
+        (n.data.timelineLinked && n.data.burnSubtitles === false)
+          ? h('div', { key: 'subtrack', className: 'dshic-hint' }, T('tlSubTrack') + (Array.isArray(n.data.subtitleTrack) ? (' · ' + n.data.subtitleTrack.length) : ''))
+          : null,
         h('div', { key: 'set', style: { display: 'flex', flexDirection: 'column', gap: 5 } },
           h('div', { className: 'dshic-node-row' },
             h(MiniSelect, {
@@ -14483,12 +14680,159 @@ function queueThumb(assetId) {
       ];
     }
 
+    function fmtClock(sec) {
+      const s = Math.max(0, Math.floor(Number(sec) || 0));
+      return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+    }
+    async function detectVideoCuts(file) {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.muted = true;
+      video.preload = 'auto';
+      video.src = url;
+      try {
+        await new Promise((res, rej) => {
+          video.onloadedmetadata = () => res();
+          video.onerror = () => rej(new Error('无法解码原片'));
+        });
+        const dur = video.duration || 0;
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 18;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const hop = 1;
+        const diffs = [0];
+        const frames = [];
+        let prev = null;
+        const maxFrames = Math.min(180, Math.ceil(dur / hop));
+        for (let i = 0; i < maxFrames; i++) {
+          const t = i * hop;
+          if (t >= dur) break;
+          await new Promise((res) => {
+            const timer = setTimeout(res, 800);
+            video.onseeked = () => { clearTimeout(timer); res(); };
+            try { video.currentTime = Math.min(t, Math.max(0, dur - 0.05)); } catch { clearTimeout(timer); res(); }
+          });
+          try { ctx.drawImage(video, 0, 0, canvas.width, canvas.height); } catch { diffs.push(0); continue; }
+          const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          if (prev) {
+            let acc = 0;
+            let n = 0;
+            for (let p = 0; p < data.length; p += 16) {
+              acc += Math.abs(data[p] - prev[p]) + Math.abs(data[p + 1] - prev[p + 1]) + Math.abs(data[p + 2] - prev[p + 2]);
+              n++;
+            }
+            diffs.push(n ? (acc / n) / 765 : 0);
+          }
+          prev = new Uint8ClampedArray(data);
+          if (frames.length < 6 && (i === 0 || diffs[diffs.length - 1] >= 0.18)) frames.push({ t, dataUrl: canvas.toDataURL('image/jpeg', 0.6) });
+        }
+        const cuts = [];
+        for (let i = 1; i < diffs.length; i++) {
+          const t = Math.round(i * hop * 1000) / 1000;
+          const prevCut = cuts.length ? cuts[cuts.length - 1] : 0;
+          if (diffs[i] >= 0.18 && t - prevCut >= 0.8) cuts.push(t);
+        }
+        return { cuts: cuts.filter((t) => t > 0.3 && t < dur - 0.3), frames, duration: dur };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
     function AudioNodeBody({ n }) {
       const url = useAssetUrl(n.data.assetId);
-      const running = n.data.status === 'running';
+      const pkg = n.data.mvPackage;
       const an = n.data.analysis;
+      const scenes = (pkg && pkg.scenes) || [];
+      const dur = (pkg && pkg.durationSec) || (an && an.durationSec) || n.data.durationSec || 0;
+      const [time, setTime] = useState(0);
+      const [playing, setPlaying] = useState(false);
+      const [zoom, setZoom] = useState(1);
+      const [sel, setSel] = useState(0);
+      const [sub, setSub] = useState('silver');
+      const [flt, setFlt] = useState('none');
+      const [busy, setBusy] = useState('');
+      const [castName, setCastName] = useState('');
+      const [tab, setTab] = useState('overview');
+      const audioRef = useRef(null);
       const fileRef = useRef(null);
-      const onFile = async (e) => {
+      const vidFileRef = useRef(null);
+      const previewRef = useRef(null);
+      const undoRef = useRef([]);
+      const redoRef = useRef([]);
+      useEffect(() => {
+        const el = audioRef.current;
+        if (!el) return undefined;
+        const onT = () => setTime(el.currentTime || 0);
+        const onEnd = () => setPlaying(false);
+        el.addEventListener('timeupdate', onT);
+        el.addEventListener('ended', onEnd);
+        return () => { el.removeEventListener('timeupdate', onT); el.removeEventListener('ended', onEnd); };
+      }, [url]);
+      const scene = scenes.find((sc) => time >= sc.startSec && time < sc.endSec - 0.001) || scenes[sel] || null;
+      const sceneIndex = scene ? scenes.indexOf(scene) : sel;
+      const shot = scene && scene.shots && scene.shots[0];
+      const vidNode = Object.values((S.graph && S.graph.nodes) || {}).find((nd) => nd && nd.data && nd.data.mvKey === 'mv:' + n.id + ':vid:' + sceneIndex);
+      const clipId = (vidNode && vidNode.data && vidNode.data.assetId) || (scene && scene.gen && scene.gen.assetId) || '';
+      const clipUrl = useAssetUrl(clipId);
+      const srcUrl = useAssetUrl(n.data.sourceVideoAssetId || '');
+      const showClip = !!(clipUrl && scene && !scene.keep);
+      const previewUrl = showClip ? clipUrl : (srcUrl || '');
+      const lyric = ((an && an.lyrics) || []).find((l) => time >= l.startSec && time < l.endSec);
+      const caption = lyric && lyric.text
+        ? lyric.text
+        : (shot && (shot.visual || shot.title)) || (an && an.summary) || '';
+      const px = Math.max(48, dur * 8 * zoom);
+      const seek = (t) => {
+        const el = audioRef.current;
+        const next = Math.max(0, Math.min(dur || 0, t));
+        if (el) el.currentTime = next;
+        setTime(next);
+      };
+      const toggle = () => {
+        const el = audioRef.current;
+        if (!el) return;
+        if (el.paused) { el.play().catch(() => {}); setPlaying(true); }
+        else { el.pause(); setPlaying(false); }
+      };
+      const remember = () => {
+        if (!pkg) return;
+        undoRef.current = undoRef.current.concat([JSON.parse(JSON.stringify(pkg))]).slice(-20);
+        redoRef.current = [];
+      };
+      const applyPkg = (next) => {
+        update((s) => {
+          const nd = s.graph.nodes[n.id];
+          if (nd) nd.data.mvPackage = next;
+        });
+      };
+      const undo = () => {
+        const prev = undoRef.current.pop();
+        if (!prev || !pkg) return;
+        redoRef.current.push(JSON.parse(JSON.stringify(pkg)));
+        applyPkg(prev);
+      };
+      const redo = () => {
+        const nxt = redoRef.current.pop();
+        if (!nxt || !pkg) return;
+        undoRef.current.push(JSON.parse(JSON.stringify(pkg)));
+        applyPkg(nxt);
+      };
+      const patchShot = async (patch) => {
+        if (!scene) return;
+        remember();
+        setBusy('patch');
+        try {
+          const r = await hostRpc('audioPatchTimeline', {
+            projectId: S.activeId, nodeId: n.id, sceneIndex, shotIndex: 0, patch,
+          });
+          if (r && r.package) applyPkg(r.package);
+          const full = await hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() });
+          mergeHostDoc(S.activeId, full, activeCanvasId());
+        } catch (e) {
+          toast(String((e && e.message) || e));
+        } finally { setBusy(''); }
+      };
+      const onAudioFile = async (e) => {
         const f = e.target.files && e.target.files[0];
         e.target.value = '';
         if (!f) return;
@@ -14503,50 +14847,351 @@ function queueThumb(assetId) {
           nd.data.assetId = rec.id;
           nd.data.label = f.name.replace(/\.[a-z0-9]+$/i, '') || nd.data.label;
           nd.data.analysis = null;
+          nd.data.mvPackage = null;
           nd.data.status = 'idle';
           nd.data.error = null;
         });
         flushSave();
       };
-      const tags = an
-        ? [
-          an.bpm ? (an.bpm + ' BPM') : '',
-          an.method === 'model' ? T('audioModel') : an.method === 'webaudio' ? T('audioLocal') : T('audioMock'),
-          (an.sections || []).slice(0, 4).map((s) => s.label).join('·'),
-        ].filter(Boolean).join(' · ')
+      const buildTimeline = async () => {
+        setBusy('build');
+        try {
+          let analysis = n.data.analysis;
+          if (!analysis) analysis = await genAudioNode({ ...n, data: { ...n.data, ...(S.graph.nodes[n.id] && S.graph.nodes[n.id].data) } });
+          const live = S.graph.nodes[n.id];
+          const style = (live && live.data && live.data.styleText) || '';
+          let allowedDurations;
+          try {
+            const vid = resolveVideoModelCfg(loadSettings(), '');
+            const extra = vid && vid.extra ? JSON.parse(vid.extra) : null;
+            if (extra && Array.isArray(extra.durations)) allowedDurations = extra.durations;
+            else if (extra && Array.isArray(extra.allowedDurations)) allowedDurations = extra.allowedDurations;
+          } catch { allowedDurations = undefined; }
+          const r = await hostRpc('audioBuildTimeline', {
+            projectId: S.activeId, nodeId: n.id, style,
+            analysis: (live && live.data && live.data.analysis) || analysis,
+            ...(allowedDurations ? { allowedDurations } : {}),
+          });
+          if (r && r.package) applyPkg(r.package);
+        } catch (e) {
+          toast(String((e && e.message) || e));
+        } finally { setBusy(''); }
+      };
+      const pushCanvas = async () => {
+        setBusy('push');
+        try {
+          flushSave();
+          await hostRpc('audioProduceMusicVideo', {
+            projectId: S.activeId, nodeId: n.id, keepPackage: true,
+            style: (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.styleText) || '',
+          });
+          const full = await hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() });
+          mergeHostDoc(S.activeId, full, activeCanvasId());
+          toast(T('tlPush'));
+        } catch (e) {
+          toast(String((e && e.message) || e));
+        } finally { setBusy(''); }
+      };
+      const owned = () => Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && nd.data.mvFrom === n.id);
+      const runOwned = async (pred) => {
+        const list = owned().filter(pred);
+        for (const nd of list) await runGenNode(nd);
+      };
+      const genAll = async () => {
+        if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
+        setBusy('gen');
+        try {
+          await runOwned((nd) => nd.type === 'image' && !String(nd.data.mvKey || '').includes(':src:'));
+          const videos = owned().filter((nd) => nd.type === 'video' && !nd.data.skipGen).sort((a, b) => (a.data.mvIndex || 0) - (b.data.mvIndex || 0));
+          for (const nd of videos) await runGenNode(nd);
+          const cut = owned().find((nd) => nd.type === 'finalcut');
+          if (cut) await runGenNode(cut);
+        } catch (e) {
+          toast(String((e && e.message) || e));
+        } finally { setBusy(''); }
+      };
+      const regenOne = async () => {
+        const vid = owned().find((nd) => nd.type === 'video' && nd.data.mvIndex === sceneIndex);
+        if (!vid) { toast(T('tlPush')); return; }
+        await runGenNode(vid);
+      };
+      const regenStale = async () => {
+        const videos = owned().filter((nd) => nd.type === 'video' && (nd.data.mvStale || (scenes[nd.data.mvIndex] && scenes[nd.data.mvIndex].gen && scenes[nd.data.mvIndex].gen.stale)));
+        for (const nd of videos) await runGenNode(nd);
+      };
+      const importSource = async (e) => {
+        const f = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (!f) return;
+        setBusy('remix');
+        try {
+          let sourceAssetId = '';
+          try {
+            const rec = await saveAssetRecord(S.activeId, 'video', f, { name: f.name, source: 'upload', category: 'video' });
+            sourceAssetId = rec && rec.id;
+          } catch { sourceAssetId = ''; }
+          let detected = { cuts: [], frames: [], duration: dur };
+          try { detected = await detectVideoCuts(f); } catch { detected = { cuts: [], frames: [], duration: dur }; }
+          const settings = loadSettings();
+          const audioCfg = resolveAudioModelCfg(settings, '');
+          const descriptions = [];
+          if (audioCfg) {
+            for (const frame of detected.frames || []) {
+              const r = await hostRpc('audioDescribeFrame', {
+                provider: { baseUrl: audioCfg.baseUrl, apiKey: audioCfg.apiKey, model: audioCfg.model, extra: audioCfg.extra || '' },
+                imageDataUrl: frame.dataUrl,
+              }).catch(() => ({ description: '', fallback: true }));
+              descriptions.push((r && r.description) || '');
+            }
+          }
+          const img = resolveImageModelCfg(settings, '');
+          const vid = resolveVideoModelCfg(settings, '');
+          const live = S.graph.nodes[n.id];
+          const r = await hostRpc('audioRemix', {
+            projectId: S.activeId,
+            nodeId: n.id,
+            style: (live && live.data && live.data.styleText) || '恶搞翻拍，人物替换',
+            cuts: detected.cuts,
+            descriptions,
+            replacements: [{ name: castName || '替换角色' }],
+            sourceAssetId,
+            durationSec: detected.duration || (live && live.data && live.data.durationSec) || dur,
+            providerHint: { imageMode: (img && img.mode) || '', videoExtra: (vid && vid.extra) || '', videoProtocol: (vid && vid.protocol) || '' },
+          });
+          if (r && r.package) applyPkg(r.package);
+          if (sourceAssetId) update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.sourceVideoAssetId = sourceAssetId; });
+          const full = await hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() });
+          mergeHostDoc(S.activeId, full, activeCanvasId());
+          if (r && r.text) toast(String(r.text).slice(0, 80));
+        } catch (err) {
+          toast(String((err && err.message) || err));
+        } finally { setBusy(''); }
+      };
+      const onPreviewMeta = () => {
+        const el = previewRef.current;
+        if (!el || !scene || !showClip) return;
+        const actual = el.duration;
+        if (!actual || !isFinite(actual)) return;
+        if (Math.abs(actual - scene.duration) > 0.45) {
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            const sc = nd && nd.data && nd.data.mvPackage && nd.data.mvPackage.scenes && nd.data.mvPackage.scenes[sceneIndex];
+            if (!sc) return;
+            sc.gen = Object.assign({}, sc.gen || {}, { actualSec: Math.round(actual * 10) / 10 });
+            const note = '成片时长 ' + sc.gen.actualSec + 's，槽位 ' + sc.duration + 's';
+            if (!String(sc.gen.warn || '').includes('成片时长')) sc.gen.warn = sc.gen.warn ? (sc.gen.warn + '；' + note) : note;
+            const v = Object.values(s.graph.nodes).find((x) => x && x.data && x.data.mvKey === 'mv:' + n.id + ':vid:' + sceneIndex);
+            if (v) { v.data.actualSec = sc.gen.actualSec; v.data.genWarn = sc.gen.warn; }
+          });
+        }
+      };
+      const peaks = (n.data.peaks && n.data.peaks.length) ? n.data.peaks : ((an && an.energyCurve) || []);
+      const bars = [];
+      const barCount = Math.max(24, Math.min(160, Math.round(px / 6)));
+      for (let i = 0; i < barCount; i++) {
+        const src = peaks.length ? peaks[Math.floor(i / barCount * peaks.length)] : 0.35;
+        const hgt = Math.max(8, Math.round((Number(src) || 0.2) * 26));
+        bars.push(h('div', {
+          key: 'b' + i,
+          style: { position: 'absolute', left: (i / barCount) * px, width: Math.max(2, px / barCount - 1), bottom: 2, height: hgt, background: '#5b46e8' },
+        }));
+      }
+      const block = (sc, i, kind) => {
+        const left = dur ? (sc.startSec / dur) * px : 0;
+        const width = Math.max(8, dur ? ((sc.endSec - sc.startSec) / dur) * px : 8);
+        const stale = sc.gen && (sc.gen.stale || sc.gen.status === 'stale');
+        const drift = sc.consistency && sc.consistency.drift;
+        const label = kind === 'ai'
+          ? (sc.title || '')
+          : kind === 'cont'
+            ? ((sc.join === 'continuous' ? '↔ ' : '✂ ') + ((sc.refs && sc.refs.locations && sc.refs.locations[0]) || sc.group || ''))
+            : (sc.keep ? T('tlKeep') : ((sc.shots && sc.shots[0] && sc.shots[0].camera) || sc.title || ''));
+        return h('div', {
+          key: kind + i,
+          className: 'dshic-mtl-block ' + (kind === 'ai' ? 'is-ai' : 'is-shot') + (sc.keep ? ' is-keep' : '') + (stale ? ' is-stale' : '') + (drift ? ' is-drift' : '') + (i === sceneIndex ? ' is-on' : ''),
+          style: { left, width },
+          title: label,
+          onPointerDown: (e) => e.stopPropagation(),
+          onClick: () => { setSel(i); seek(sc.startSec); },
+        }, label, kind === 'ai' ? h('span', {
+          className: 'dshic-mtl-resize',
+          onPointerDown: (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const startX = e.clientX;
+            const startDur = sc.duration;
+            const move = (ev) => {
+              const delta = (ev.clientX - startX) / (px / Math.max(1, dur));
+              const box = e.currentTarget && e.currentTarget.parentNode;
+              if (box) box.style.width = Math.max(8, ((startDur + delta) / Math.max(1, dur)) * px) + 'px';
+            };
+            const up = (ev) => {
+              window.removeEventListener('pointermove', move);
+              window.removeEventListener('pointerup', up);
+              const delta = (ev.clientX - startX) / (px / Math.max(1, dur));
+              const next = Math.max(0.4, Math.round((startDur + delta) * 10) / 10);
+              if (Math.abs(next - startDur) > 0.15) patchShot({ duration: next });
+            };
+            window.addEventListener('pointermove', move);
+            window.addEventListener('pointerup', up);
+          },
+        }) : null);
+      };
+      const marks = [];
+      const step = dur > 120 ? 15 : 10;
+      for (let t = 0; t <= dur + 0.01; t += step) {
+        marks.push(h('span', { key: 'm' + t, style: { position: 'absolute', left: dur ? (t / dur) * px : 0 } }, fmtClock(t)));
+      }
+      const refsText = scene && scene.refs
+        ? [].concat(scene.refs.characters || [], scene.refs.locations || [], scene.refs.props || []).join('、')
         : '';
-      return [
-        h('input', { key: 'file', ref: fileRef, type: 'file', accept: 'audio/*,.mp3,.wav,.m4a,.aac,.ogg', style: { display: 'none' }, onChange: onFile }),
-        url
-          ? h('audio', { key: 'player', className: 'dshic-audio', src: url, controls: true, preload: 'metadata', 'data-no-drag': '1', onPointerDown: (e) => e.stopPropagation() })
-          : h('button', {
-            key: 'up', type: 'button', className: 'dshic-mini',
-            onPointerDown: (e) => e.stopPropagation(),
-            onClick: () => { const el = fileRef.current; if (el) el.click(); },
-          }, Ic('audio', 12), T('audioUpload')),
-        running
-          ? h('div', { key: 'run', className: 'dshic-node-row' }, h('span', { className: 'dshic-spin' }), h('span', { className: 'dshic-hint' }, T('audioAnalyzing')))
-          : null,
-        tags ? h('div', { key: 'tags', className: 'dshic-hint', title: (an && an.summary) || '' }, tags) : null,
-        an && an.summary ? h('div', { key: 'sum', className: 'dshic-hint' }, String(an.summary).slice(0, 80)) : null,
-        n.data.error ? h('div', { key: 'err', className: 'dshic-err' }, n.data.error) : null,
-        url
-          ? h('div', { key: 'acts', className: 'dshic-node-row' },
-            h('button', {
-              type: 'button', className: 'dshic-mini',
-              onPointerDown: (e) => e.stopPropagation(),
-              onClick: () => { const el = fileRef.current; if (el) el.click(); },
-            }, T('audioUpload')),
-            h('button', {
-              type: 'button', className: 'dshic-mini',
-              disabled: running,
-              onPointerDown: (e) => e.stopPropagation(),
-              onClick: () => { runGenNode(n); },
-            }, running ? T('audioAnalyzing') : T('audioAnalyze')))
-          : null,
-      ];
+      const status = scene && scene.gen && scene.gen.status;
+      const filterCls = flt === 'warm' ? ' is-warm' : flt === 'cool' ? ' is-cool' : flt === 'contrast' ? ' is-contrast' : '';
+      return h('div', { className: 'dshic-mtl', 'data-music-tl': '1', 'data-no-drag': '1', onPointerDown: (e) => e.stopPropagation() },
+        h('input', { ref: fileRef, type: 'file', accept: 'audio/*,.mp3,.wav,.m4a,.aac,.ogg', style: { display: 'none' }, onChange: onAudioFile }),
+        h('input', { ref: vidFileRef, type: 'file', accept: 'video/*,.mp4,.mov,.webm', style: { display: 'none' }, onChange: importSource }),
+        url ? h('audio', { ref: audioRef, src: url, preload: 'metadata' }) : null,
+        h('div', { className: 'dshic-mtl-preview' + filterCls },
+          previewUrl
+            ? h('video', {
+              ref: previewRef, src: previewUrl, muted: true,
+              onLoadedMetadata: onPreviewMeta,
+            })
+            : h('div', { className: 'dshic-mtl-caption' + (sub === 'plain' ? ' is-plain' : '') }, sub === 'none' ? '' : caption),
+          sub !== 'none' && previewUrl ? h('div', { className: 'dshic-mtl-caption', style: { position: 'absolute', bottom: 8 } }, caption) : null),
+        h('div', { className: 'dshic-mtl-transport' },
+          h('button', { type: 'button', className: 'dshic-mtl-ico', title: T('tlUndo'), onClick: undo }, '↩'),
+          h('button', { type: 'button', className: 'dshic-mtl-ico', title: T('tlRedo'), onClick: redo }, '↪'),
+          h('span', { className: 'dshic-mtl-time' }, fmtClock(time)),
+          h('button', { type: 'button', className: 'dshic-mtl-play', title: playing ? T('tlPause') : T('tlPlay'), onClick: toggle }, playing ? 'Ⅱ' : '▶'),
+          h('span', { className: 'dshic-mtl-time' }, fmtClock(dur)),
+          h('select', { className: 'dshic-mtl-select', value: sub, onChange: (e) => setSub(e.target.value) },
+            h('option', { value: 'silver' }, T('tlSub') + ': ' + T('subSilver')),
+            h('option', { value: 'plain' }, T('subPlain')),
+            h('option', { value: 'none' }, T('subNone'))),
+          h('select', { className: 'dshic-mtl-select', value: flt, onChange: (e) => setFlt(e.target.value) },
+            h('option', { value: 'none' }, T('tlFilter') + ': ' + T('fltNone')),
+            h('option', { value: 'warm' }, T('fltWarm')),
+            h('option', { value: 'cool' }, T('fltCool')),
+            h('option', { value: 'contrast' }, T('fltContrast')))),
+        h('div', { className: 'dshic-mtl-style' },
+          h('input', {
+            value: n.data.styleText || '',
+            placeholder: T('tlStylePh'),
+            onChange: (e) => update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.styleText = e.target.value; }),
+          }),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: buildTimeline }, busy === 'build' ? '…' : T('tlGenerate')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: pushCanvas }, T('tlPush')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: genAll }, T('tlGenAll'))),
+        h('div', { className: 'dshic-mtl-style' },
+          h('input', { value: castName, onChange: (e) => setCastName(e.target.value), placeholder: T('tlCast') }),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => { const el = vidFileRef.current; if (el) el.click(); } }, busy === 'remix' ? '…' : T('tlImport')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !url, onClick: () => { const el = fileRef.current; if (el) el.click(); } }, T('audioUpload'))),
+        scene ? h('div', { className: 'dshic-mtl-inspector' },
+          h('span', null, T('tlStory')),
+          h('textarea', { rows: 2, value: (shot && shot.visual) || '', onBlur: (e) => patchShot({ visual: e.target.value }) }),
+          h('span', null, T('tlCam')),
+          h('input', { value: (shot && shot.camera) || '', onBlur: (e) => patchShot({ camera: e.target.value }) }),
+          h('span', null, T('tlVidPrompt')),
+          h('textarea', { rows: 2, value: (shot && shot.videoPrompt) || '', onBlur: (e) => patchShot({ videoPrompt: e.target.value }) }),
+          h('span', null, T('tlJoin')),
+          h('select', {
+            value: scene.join === 'continuous' ? 'continuous' : 'cut',
+            onChange: (e) => patchShot({ join: e.target.value }),
+          }, h('option', { value: 'cut' }, T('tlCut')), h('option', { value: 'continuous' }, T('tlCont'))),
+          h('span', null, T('tlRefs')),
+          h('input', {
+            value: ((scene.refs && scene.refs.characters) || []).join('、'),
+            onBlur: (e) => {
+              const names = String(e.target.value || '').split(/[、,，]/).map((x) => x.trim()).filter(Boolean);
+              patchShot({
+                refs: {
+                  characters: names,
+                  locations: (scene.refs && scene.refs.locations) || [],
+                  props: (scene.refs && scene.refs.props) || [],
+                },
+              });
+            },
+          }),
+          h('span', null, T('tlGenDur')),
+          h('span', null, (scene.gen && scene.gen.requestSec ? (scene.gen.requestSec + 's / ' + scene.duration + 's') : (scene.duration + 's'))
+            + (status ? (' · ' + status) : '')
+            + (scene.keep ? (' · ' + T('tlKeep')) : '')
+            + (scene.awaitingConfirm ? ' · 待确认' : '')
+            + (scene.consistency && scene.consistency.drift ? (' · ' + T('tlDrift')) : '')
+            + (scene.gen && scene.gen.warn ? (' · ' + scene.gen.warn) : '')),
+          h('span', null, T('tlLock')),
+          h('span', null, (pkg.continuity && pkg.continuity.styleLock) || ''),
+          h('span', null, T('tlTakes')),
+          h('select', {
+            value: clipId || '',
+            onChange: (e) => {
+              const assetId = e.target.value;
+              update((s) => {
+                const v = Object.values(s.graph.nodes).find((x) => x && x.data && x.data.mvKey === 'mv:' + n.id + ':vid:' + sceneIndex);
+                if (v) v.data.assetId = assetId;
+                const sc = s.graph.nodes[n.id] && s.graph.nodes[n.id].data.mvPackage.scenes[sceneIndex];
+                if (sc && sc.gen) sc.gen.assetId = assetId;
+              });
+              flushSave();
+            },
+          }, h('option', { value: '' }, '—'), ((scene.gen && scene.gen.history) || []).map((take) => h('option', { key: take.assetId, value: take.assetId }, String(take.assetId).slice(0, 8)))),
+          h('span', null, ''),
+          h('span', null,
+            h('button', { type: 'button', className: 'dshic-mini', onClick: regenOne }, T('tlRegen')),
+            ' ',
+            h('button', { type: 'button', className: 'dshic-mini', onClick: regenStale }, T('tlRegenStale')),
+            ' ',
+            h('button', { type: 'button', className: 'dshic-mini', onClick: () => patchShot({ keep: !scene.keep }) }, scene.keep ? T('tlRemix') : T('tlKeep')))) : null,
+        h('div', { className: 'dshic-mtl-meta' },
+          h('div', { className: 'dshic-mtl-tabs' },
+            [['overview', T('tlOverview')], ['script', T('tlScript')], ['roles', T('tlRoles')], ['places', T('tlPlaces')]].map(([id, label]) => h('button', {
+              key: id, type: 'button', className: 'dshic-mini' + (tab === id ? ' is-on' : ''),
+              onClick: () => setTab(id),
+            }, label))),
+          h('span', null, n.data.label || T('tlSource')),
+          h('input', { type: 'range', min: '0.5', max: '3', step: '0.1', value: String(zoom), onChange: (e) => setZoom(Number(e.target.value)) })),
+        tab !== 'overview' ? h('div', { className: 'dshic-mtl-doc' },
+          tab === 'script'
+            ? h('div', null,
+              h('div', null, (pkg && pkg.script) || ''),
+              ((pkg && pkg.subtitleTrack) || []).map((cue, i) => h('input', {
+                key: cue.id || i, value: cue.text || '',
+                onChange: (e) => update((s) => {
+                  const nd = s.graph.nodes[n.id];
+                  const row = nd && nd.data && nd.data.mvPackage && nd.data.mvPackage.subtitleTrack && nd.data.mvPackage.subtitleTrack[i];
+                  if (row) row.text = e.target.value;
+                }),
+              })))
+            : tab === 'roles'
+              ? ((pkg && pkg.characters && pkg.characters.length)
+                ? pkg.characters.map((c) => (c.name || '') + ' · ' + T('tlFace') + ' ' + (c.faceId || '') + ' · ' + T('tlCasting') + ' ' + (c.castingCount || 1) + '\n' + (c.appearance || c.desc || '')).join('\n\n')
+                : T('tlNoCast'))
+              : ((pkg && pkg.locations && pkg.locations.length)
+                ? pkg.locations.map((loc) => (loc.name || '') + ' · ' + T('tlMain') + (loc.hasMain ? ' ✓' : ' · ' + T('tlBlocked')) + ' · ' + T('tlViews') + (loc.hasMultiView ? ' ✓' : '') + '\n' + (loc.mainPrompt || '')).join('\n\n')
+                : T('tlNoPlace')))
+          : h('div', { className: 'dshic-mtl-scroll' },
+          h('div', { style: { width: px + 22, position: 'relative' } },
+            h('div', { className: 'dshic-mtl-ruler', style: { marginLeft: 22, width: px, position: 'relative' } }, marks),
+            h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '✦'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, ((pkg && pkg.sections && pkg.sections.length) ? pkg.sections : scenes).map((sc, i) => (pkg && pkg.sections && pkg.sections.length)
+              ? h('div', {
+                key: 'sec' + i, className: 'dshic-mtl-block is-ai',
+                style: { left: dur ? (sc.startSec / dur) * px : 0, width: Math.max(8, dur ? ((sc.endSec - sc.startSec) / dur) * px : 8) },
+                title: sc.line || '',
+                onPointerDown: (e) => e.stopPropagation(),
+                onClick: () => seek(sc.startSec),
+              }, sc.line || sc.label || '')
+              : block(sc, i, 'ai')))),
+            h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '♪'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, bars)),
+            h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, 'T'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, (((pkg && pkg.subtitleTrack && pkg.subtitleTrack.length) ? pkg.subtitleTrack : ((an && an.lyrics) || []))).map((l, i) => h('div', {
+              key: 'ly' + i, className: 'dshic-mtl-block is-lyric',
+              style: { left: dur ? (l.startSec / dur) * px : 0, width: Math.max(8, dur ? ((l.endSec - l.startSec) / dur) * px : 8) },
+              onClick: () => seek(l.startSec),
+            }, l.text || '')))),
+            h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '◎'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, scenes.map((sc, i) => block(sc, i, 'cont')))),
+            h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '🎞'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, scenes.map((sc, i) => block(sc, i, 'shot')))),
+            h('div', { className: 'dshic-mtl-playhead', style: { left: 22 + (dur ? (time / dur) * px : 0) } }))));
     }
-
     function nodeBody(n, edgeSig) {
       // 兜底：文档入口已归一，但历史上存进撤销快照/外部注入的节点类型仍可能是旧名
       const type = normalizeNodeType(n.type);
@@ -19508,6 +20153,23 @@ const DIRECTOR_KEY_HELP = [
                 },
                   Object.entries(VIDEO_VENDORS).map(([id, vd]) => h('option', { key: id, value: id }, vd.label))),
               ) : null,
+              isAudio ? h('div', { key: 'presets', className: 'dshic-row', style: { flexWrap: 'wrap' } },
+                [
+                  { id: 'beijing', label: T('tlPresetBj'), baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-omni-flash' },
+                  { id: 'singapore', label: T('tlPresetSg'), baseUrl: 'https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1', model: 'qwen3-omni-flash' },
+                  { id: 'intl', label: T('tlPresetIntl'), baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-omni-flash' },
+                ].map((pr) => h('button', {
+                  key: pr.id, type: 'button', className: 'dshic-mini', title: pr.baseUrl,
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onClick: () => mutate((d) => {
+                    const row = (d.audioProviders || []).find((x) => x.id === p.id);
+                    if (!row) return;
+                    row.baseUrl = pr.baseUrl;
+                    if (!row.models || !row.models.length) row.models = [{ id: uid('m'), model: pr.model }];
+                    else row.models[0].model = pr.model;
+                    if (!d.audioStar) d.audioStar = row.id + '|' + row.models[0].id;
+                  }),
+                }, pr.label))) : null,
               h(Field, { key: 'u', label: T('baseUrl'), value: p[urlKey] || '', onChange: (v) => patchProvider(p.id, urlKey, v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).base || urlPh) : urlPh }),
               h(Field, { key: 'k', label: T('apiKey'), value: p.apiKey || '', onChange: (v) => patchProvider(p.id, 'apiKey', v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).keyPh || 'sk-…') : 'sk-…', password: true }),
               kind === 'image' ? [

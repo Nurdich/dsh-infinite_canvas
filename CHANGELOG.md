@@ -8,6 +8,10 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 
 ### Added
 - **Audio-driven music videos.** An audio node holds a song (upload, asset library, or `canvas_create_node type:audio`). An audio-understanding provider — same two-level provider + model settings as image/video, ★ default — calls an OpenAI-compatible chat endpoint with `input_audio` (DashScope / Bailian `compatible-mode/v1`). The suggested model id is `qwen3.8-omni-flash` (the official id for the name Qwen3.8-Omni-Flash). The host process sends the request and forces `stream: true`. The result is JSON (`dshic.audio-analysis.v1`: BPM, beats, sections, energy, genre, lyrics, imagery). `canvas_analyze_audio` writes it; `canvas_music_video` builds a storyboard cut to those sections and beats, within the existing ≤15s clip planner and tail-frame chain, and wires the song into the final cut. The media-studio persona and director-workshop skill tell the agent to analyze the song before drafting an MV.
+- **Music timeline on the audio node.** The node is a small editor: preview, transport, waveform, section / lyric / continuity / shot tracks, and a style sentence. `canvas_music_timeline` fills every second of the song with shots (story, camera, keyframe prompt, video prompt). Editing a block marks that clip stale; regenerate one block or every stale block. Returned clip length is compared with the beat slot.
+- **Long-form continuity on the same timeline.** Each block records which bible characters, locations and props are bound, and whether the boundary is a hard cut or a tail-frame continuation. A style lock is written into every prompt. Consecutive blocks in one location share that location reference. After generation, the existing storyboard consistency warnings plus a duration mismatch flag the block so it can be regenerated.
+- **Remix / character replacement.** `canvas_music_remix` lays a source MV onto the timeline from cut times (the node detects cuts by frame difference). Each block can be remade with a replacement character and a parody style line, or kept as the original shot. The path is chosen from the configured provider: image-edit then image-to-video, reference-to-video, or a recorded video-to-video intent that still falls back because no generic video-edit request exists.
+- **MV production stages on the same timeline.** Section blocks carry a one-line description taken from the analysis. The script is tempo and lyric tags from that analysis. Characters get a face id and a casting count only when the song actually has characters; locations get a main-image prompt and a multi-view prompt. A shot that references a location with no main image is blocked. Complaints rewrite one shot and wait for confirmation before that shot is regenerated. The final cut keeps an editable subtitle track and does not burn those subtitles into the picture. Shot count and duration follow the song plus the configured model's allowed durations. Nothing in this path is tied to a sample film, a sample song, or a sample model.
 
 ### Fixed
 - **Audio assets can be placed on the canvas.** Import and batch-add used to skip every audio file. They now become audio nodes.
@@ -16,7 +20,7 @@ GitHub Releases carry the same notes in English; maintainer-facing runbooks live
 - **Icon rail order** inserts 音频 between 视频 and 成片. UI rule 12 and the panel-layout gate match the new order.
 
 ### Internal
-- **`audio-drive.js` plus `scripts/test-audio-drive.mjs`.** Request shape, SSE parse, local beat fallback, storyboard alignment against `planShotSegments`, and the two canvas tools. No release version bump.
+- **`audio-drive.js` plus `scripts/test-audio-drive.mjs`.** Request shape, SSE parse, local beat fallback, full-song package, continuity, remix capability fallback, storyboard alignment against `planShotSegments`, and the canvas tools. No release version bump.
 
 ## [0.19.21] — 2026-11-03
 
