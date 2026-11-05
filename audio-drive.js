@@ -55,6 +55,207 @@ export function snapGenerationDuration(sec, allowed) {
   return { requestSec: best, slotSec: slot, split: false, warn };
 }
 
+/** 上传后的时长：解码结果优先，其次 metadata，其次节点上已存的值。都没有就是 0，不能假装有时长。 */
+export function readAudioDuration(src) {
+  const o = src || {};
+  for (const v of [o.decodedSec, o.metadataSec, o.storedSec]) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0.05) return Math.round(n * 1000) / 1000;
+  }
+  return 0;
+}
+
+/** 时间轴宽度至少铺满可见区域。时长未知时也不许缩成几十像素的短条。 */
+export function timelineLanePx(durationSec, viewWidth, zoom) {
+  const view = Math.max(280, Number(viewWidth) || 280);
+  const z = Number(zoom) > 0 ? Number(zoom) : 1;
+  const dur = Number(durationSec) || 0;
+  if (!(dur > 0)) return view;
+  return Math.max(view, Math.round(dur * 8 * z));
+}
+
+/** 把整首切成能放进 Base64 上限的窗口，窗口之间重叠，避免段落刚好被切断。 */
+export function planAudioWindows(durationSec, opts) {
+  const dur = Math.max(0, Number(durationSec) || 0);
+  const sampleRate = Math.max(8000, Number(opts && opts.sampleRate) || 16000);
+  const limit = Number(opts && opts.base64Limit) || AUDIO_BASE64_LIMIT;
+  const overlap = Math.max(0, Number(opts && opts.overlapSec) || 2);
+  const rawBudget = Math.floor((limit * 3) / 4) - 4096;
+  let windowSec = Math.floor(rawBudget / (sampleRate * 2));
+  if (!(windowSec > 8)) windowSec = 30;
+  if (!(dur > 0)) return [];
+  if (dur <= windowSec + 0.5) return [{ index: 0, startSec: 0, endSec: round3(dur), offsetSec: 0 }];
+  const step = Math.max(5, windowSec - overlap);
+  const out = [];
+  for (let t = 0; t < dur - 0.2 && out.length < 48; t += step) {
+    const end = Math.min(dur, t + windowSec);
+    out.push({ index: out.length, startSec: round3(t), endSec: round3(end), offsetSec: round3(t) });
+    if (end >= dur - 0.05) break;
+  }
+  return out;
+}
+
+/** 多段听歌结果按偏移拼回整首。重叠处同一标签的段落只留一次。 */
+export function mergeAudioAnalyses(parts, durationSec) {
+  const list = (parts || []).filter((p) => p && p.analysis).slice().sort((a, b) => (Number(a.offsetSec) || 0) - (Number(b.offsetSec) || 0));
+  if (!list.length) throw new Error('没有分析片段');
+  const dur = Number(durationSec) || 0;
+  if (list.length === 1 && !(Number(list[0].offsetSec) > 0)) {
+    const only = list[0].analysis;
+    return normalizeAnalysis(only, {
+      durationSec: dur || only.durationSec,
+      source: only.source,
+      method: only.method,
+      model: only.model,
+      warnings: only.warnings,
+    });
+  }
+  const beats = [];
+  const downbeats = [];
+  const sections = [];
+  const lyrics = [];
+  const warnings = ['整首按窗口听完后合并，重叠处已去掉重复段落。'];
+  const bpms = [];
+  let source = 'qwen-omni';
+  let method = 'model';
+  let model = null;
+  for (const part of list) {
+    const off = Number(part.offsetSec) || 0;
+    const a = part.analysis || {};
+    if (a.source !== 'qwen-omni') { source = 'local-fallback'; method = a.method || 'webaudio'; }
+    if (!model && a.model) model = a.model;
+    if (a.bpm) bpms.push(Number(a.bpm));
+    for (const t of a.beats || []) beats.push(round3(Number(t) + off));
+    for (const t of a.downbeats || []) downbeats.push(round3(Number(t) + off));
+    for (const s of a.sections || []) {
+      const start = round3(Number(s.startSec) + off);
+      const end = round3(Number(s.endSec) + off);
+      if (!(end > start)) continue;
+      if (sections.some((ex) => Math.abs(ex.startSec - start) < 1 && ex.label === s.label)) continue;
+      sections.push({ ...s, startSec: start, endSec: end });
+    }
+    for (const l of a.lyrics || []) {
+      lyrics.push({ ...l, startSec: round3(Number(l.startSec) + off), endSec: round3(Number(l.endSec) + off) });
+    }
+    if (Array.isArray(a.warnings)) warnings.push(...a.warnings);
+  }
+  bpms.sort((a, b) => a - b);
+  const bpm = bpms.length ? bpms[Math.floor(bpms.length / 2)] : null;
+  const first = list[0].analysis || {};
+  return normalizeAnalysis({
+    bpm, beats, downbeats, sections, lyrics, warnings,
+    mood: first.mood, genre: first.genre, instrumentation: first.instrumentation,
+    summary: first.summary, imagery: first.imagery, motif: first.motif,
+    characters: first.characters, locations: first.locations, props: first.props,
+  }, { durationSec: dur || undefined, source, method, model, warnings });
+}
+
+/** 边界吸到最近的拍。离拍太远就保持原时间，避免把段落拖飞。 */
+export function snapSectionBoundary(timeSec, beats, toleranceSec) {
+  const t = Number(timeSec) || 0;
+  const tol = toleranceSec == null ? 0.35 : Number(toleranceSec);
+  const list = (beats || []).map(Number).filter((n) => Number.isFinite(n));
+  const raw = Math.round(t * 1000) / 1000;
+  if (!list.length) return raw;
+  let best = list[0];
+  for (const b of list) if (Math.abs(b - t) < Math.abs(best - t)) best = b;
+  return Math.abs(best - t) <= tol ? Math.round(best * 1000) / 1000 : raw;
+}
+
+export function moveSectionBoundary(sections, index, edge, timeSec, beats) {
+  const next = JSON.parse(JSON.stringify(sections || []));
+  const sec = next[index];
+  if (!sec) throw new Error('段落不存在');
+  const t = snapSectionBoundary(timeSec, beats);
+  if (edge === 'end') {
+    const cap = next[index + 1] ? next[index + 1].endSec - 0.4 : t;
+    sec.endSec = round3(Math.max(sec.startSec + 0.4, Math.min(t, cap)));
+    if (next[index + 1]) next[index + 1].startSec = sec.endSec;
+  } else {
+    const prev = next[index - 1];
+    const floor = prev ? prev.startSec + 0.4 : 0;
+    sec.startSec = round3(Math.max(floor, Math.min(t, sec.endSec - 0.4)));
+    if (prev) prev.endSec = sec.startSec;
+  }
+  return next;
+}
+
+export function splitSectionAt(sections, index, timeSec, beats) {
+  const next = JSON.parse(JSON.stringify(sections || []));
+  const sec = next[index];
+  if (!sec) throw new Error('段落不存在');
+  let t = snapSectionBoundary(timeSec, beats);
+  if (t <= sec.startSec + 0.4) t = round3(sec.startSec + (sec.endSec - sec.startSec) / 2);
+  if (t >= sec.endSec - 0.4) t = round3(sec.endSec - 0.4);
+  if (!(t > sec.startSec + 0.3 && t < sec.endSec - 0.3)) throw new Error('这段太短，拆不开');
+  const right = { ...sec, id: sec.id + 'b', startSec: t };
+  sec.endSec = t;
+  next.splice(index + 1, 0, right);
+  return next;
+}
+
+export function mergeSectionWithNext(sections, index) {
+  const next = JSON.parse(JSON.stringify(sections || []));
+  const sec = next[index];
+  const nxt = next[index + 1];
+  if (!sec || !nxt) throw new Error('没有下一段可合并');
+  sec.endSec = nxt.endSec;
+  next.splice(index + 1, 1);
+  return next;
+}
+
+/** 每一段为什么从这里切开：段落变了、落在重拍、歌词换行，或能量跳了。 */
+export function sectionCutReasons(sections, analysis) {
+  const a = analysis || {};
+  const downs = a.downbeats || [];
+  const lyrics = a.lyrics || [];
+  return (sections || []).map((sec, i) => {
+    const prev = sections[i - 1];
+    const reasons = [];
+    if (!prev) reasons.push('歌曲起点');
+    else if (prev.label !== sec.label) reasons.push('段落变化');
+    if (downs.some((d) => Math.abs(Number(d) - Number(sec.startSec)) <= 0.35)) reasons.push('落在重拍');
+    if (lyrics.some((l) => Math.abs(Number(l.startSec) - Number(sec.startSec)) <= 0.5)) reasons.push('歌词换行');
+    if (prev && sec.energy != null && prev.energy != null && Math.abs(Number(sec.energy) - Number(prev.energy)) >= 0.25) reasons.push('能量变化');
+    if (!reasons.length) reasons.push('按结构切开');
+    return { ...sec, cutReason: reasons.join(' · ') };
+  });
+}
+
+export function sectionsToSlices(sections) {
+  return (sections || []).map((sec, i) => ({
+    index: i,
+    id: sec.id || ('s' + (i + 1)),
+    label: sec.label || '',
+    startSec: Number(sec.startSec) || 0,
+    endSec: Number(sec.endSec) || 0,
+    duration: Math.max(0, (Number(sec.endSec) || 0) - (Number(sec.startSec) || 0)),
+    cutReason: sec.cutReason || '',
+  })).filter((s) => s.duration > 0);
+}
+
+export function sliceDurationSum(slices) {
+  return (slices || []).reduce((s, x) => s + (Number(x.duration) || ((Number(x.endSec) || 0) - (Number(x.startSec) || 0))), 0);
+}
+
+/** 创作流程。没有歌曲停在上传；听完停在确认；确认后才能写风格；有了时间轴才推到画布。 */
+export function mvCreateFlow(input) {
+  const o = input || {};
+  const steps = [
+    { id: 'upload', label: '上传音乐' },
+    { id: 'analyze', label: 'AI 听歌分析' },
+    { id: 'confirm', label: '分段确认' },
+    { id: 'style', label: '输入风格并生成时间轴' },
+    { id: 'push', label: '推到画布 / 分段生成' },
+  ];
+  let current = 'upload';
+  if (o.hasAudio) current = 'analyze';
+  if (o.hasAnalysis) current = 'confirm';
+  if (o.confirmed) current = 'style';
+  if (o.hasPackage) current = 'push';
+  return { current, index: steps.findIndex((s) => s.id === current), steps };
+}
+
 /** 帧差序列 → 切点（秒）。阈值用相邻帧平均绝对差，间隔至少 0.8 秒。 */
 export function cutsFromDiffs(diffs, hopSec, threshold) {
   const hop = Math.max(0.05, num(hopSec, 0.5));
