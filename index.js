@@ -44,6 +44,10 @@ import {
   assistantSystemPrompt,
   assistantStateDigest,
   runMvAssistantTurn,
+  assistantPlannerRoute,
+  buildOmniTextBody,
+  explainModelError,
+  callOmni,
   groupShotsForClips,
   analysisDigest,
   AUDIO_ANALYSIS_SCHEMA,
@@ -4114,6 +4118,21 @@ export function apply(ctx) {
     /** 工作区注册表条目的对外视图（不泄漏内部字段）。 */
     const wsView = (w) => ({ id: w && w.id, path: w && w.path, title: (w && w.title) || '' });
 
+    /** MV 里的文本规划：配了音频理解就走那个全模态接口，否则才用 Harness 默认文本模型。 */
+    async function completeMvText(req) {
+      const provider = audioProviderFromConfig('');
+      const route = assistantPlannerRoute(provider);
+      if (route.route !== 'omni') return complete(req);
+      let extra = null;
+      try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
+      const text = await callOmni({
+        baseUrl: route.baseUrl,
+        apiKey: provider.apiKey,
+        body: buildOmniTextBody({ model: route.model, system: req && req.system, user: req && req.user, extra }),
+      });
+      return { text, model: route.model, provider: 'omni' };
+    }
+
     const methods = {
       async ping() { return { ok: true, version: VERSION }; },
       async llmOptions() { return listLlmOptions(); },
@@ -4584,13 +4603,13 @@ export function apply(ctx) {
         return { ok: true, presets: AUDIO_ENDPOINT_PRESETS };
       },
       async audioBuildTimeline(args) {
-        return canvasMusicTimeline(args || {}, (req) => complete(req));
+        return canvasMusicTimeline(args || {}, (req) => completeMvText(req));
       },
       async audioPatchTimeline(args) {
         return canvasMusicTimelineEdit(args || {});
       },
       async audioProduceMusicVideo(args) {
-        return canvasMusicVideo(args || {}, (req) => complete(req));
+        return canvasMusicVideo(args || {}, (req) => completeMvText(req));
       },
       async audioRemix(args) {
         return canvasMusicRemix(args || {});
@@ -4637,18 +4656,42 @@ export function apply(ctx) {
           mvPackage: data.mvPackage || null,
           durationSec: data.durationSec || 0,
         };
+        const passed = args && args.provider;
+        const saved = audioProviderFromConfig((args && args.audioModel) || '');
+        const provider = (passed && passed.model && passed.baseUrl && passed.apiKey) ? passed : saved;
+        const route = assistantPlannerRoute(provider);
         let modelText = (args && args.modelText) || null;
         let modelError = '';
+        let modelDetail = '';
+        let modelLabel = route.route === 'omni' ? route.label : '';
         if (!modelText) {
-          try {
-            const res = await complete({
-              system: assistantSystemPrompt(),
-              user: JSON.stringify({ message: (args && args.message) || '', state: assistantStateDigest(state) }),
-              temperature: 0.2,
-            });
-            modelText = res && res.text;
-          } catch (e) {
-            modelError = String((e && e.message) || e);
+          const user = JSON.stringify({ message: (args && args.message) || '', state: assistantStateDigest(state) });
+          if (route.route === 'omni') {
+            // 配了音频理解就只用它。失败时不改走 Harness 默认文本模型。
+            try {
+              let extra = null;
+              try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
+              modelText = await callOmni({
+                baseUrl: route.baseUrl,
+                apiKey: provider.apiKey,
+                body: buildOmniTextBody({ model: route.model, system: assistantSystemPrompt(), user, extra }),
+              });
+            } catch (e) {
+              const explained = explainModelError(e, route);
+              modelError = explained.brief;
+              modelDetail = explained.detail;
+            }
+          } else {
+            try {
+              const res = await complete({ system: assistantSystemPrompt(), user, temperature: 0.2 });
+              modelText = res && res.text;
+              modelLabel = (res && res.model) ? ('文本模型 ' + res.model) : '文本模型';
+            } catch (e) {
+              const explained = explainModelError(e, { route: 'harness', label: '文本模型' });
+              modelError = explained.brief;
+              modelDetail = explained.detail;
+              modelLabel = '文本模型';
+            }
           }
         }
         const turn = runMvAssistantTurn({
@@ -4676,6 +4719,9 @@ export function apply(ctx) {
           clientJob: turn.clientJob || null,
           args: turn.args || null,
           modelError,
+          modelDetail,
+          modelLabel,
+          planner: route.route,
           styleText: audio.data.styleText || '',
           sectionsConfirmed: !!audio.data.sectionsConfirmed,
           analysis: audio.data.analysis || null,
@@ -5435,7 +5481,7 @@ export function apply(ctx) {
           output: textOutput,
           timeoutMs: 180000,
           async execute(args) {
-            return canvasMusicTimeline(args || {}, (req) => complete(req));
+            return canvasMusicTimeline(args || {}, (req) => completeMvText(req));
           },
         });
         reg({
@@ -5510,7 +5556,7 @@ export function apply(ctx) {
           output: textOutput,
           timeoutMs: 180000,
           async execute(args) {
-            return canvasMusicVideo(args || {}, (req) => complete(req));
+            return canvasMusicVideo(args || {}, (req) => completeMvText(req));
           },
         });
         // ── 技能包：把「本插件有哪些技能、各管什么」和「当前该按什么口径写提示词」交给对话侧 ──

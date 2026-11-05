@@ -1192,6 +1192,8 @@ function revealCanvasInRight() {
       'tlStartAnalyze': '开始分析',
       'tlAnalyzing': '正在听',
       'tlNoProvider': '没有配置音频理解供应商或 Key，已改用本地波形。听不到歌词。',
+      'tlNeedOmni': '请先在设置里配置音频理解（供应商、Key 和模型），再开始分析。不会改用其他文本模型。',
+      'tlErrDetail': '详情',
       'tlOpenSettings': '打开设置',
       'tlLocalFallback': '本地波形分析（未走模型）',
       'tlConfirmSections': '确认分段',
@@ -2259,6 +2261,8 @@ function revealCanvasInRight() {
       'tlStartAnalyze': 'Start analysis',
       'tlAnalyzing': 'Listening',
       'tlNoProvider': 'No audio-understanding provider or key. Using a local waveform pass, which cannot hear lyrics.',
+      'tlNeedOmni': 'Configure Audio understanding (provider, key, and model) before analyzing. This will not call another text model.',
+      'tlErrDetail': 'Details',
       'tlOpenSettings': 'Open settings',
       'tlLocalFallback': 'Local waveform analysis (not the model)',
       'tlConfirmSections': 'Confirm sections',
@@ -3071,6 +3075,9 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-audio{width:100%;height:36px;display:block;}
 .dshic-mtl{display:flex;flex-direction:column;height:100%;min-height:0;background:#111;color:#f2f2f2;border-radius:0 0 12px 12px;overflow:hidden;position:relative;}
 .dshic-mtl-agent{position:absolute;top:28px;right:0;bottom:0;width:280px;background:#161616;border-left:1px solid #2a2a2a;display:flex;flex-direction:column;z-index:5;}
+.dshic-mtl-agent-model{flex:none;padding:6px 8px;background:#111;color:#aaa;font-size:11px;border-bottom:1px solid #2a2a2a;}
+.dshic-mtl-agent-detail{margin-top:4px;color:#aaa;font-size:11px;}
+.dshic-mtl-agent-detail pre{white-space:pre-wrap;margin:4px 0 0;color:#ccc;}
 .dshic-mtl-agent-log{flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:6px;}
 .dshic-mtl-agent-msg{background:#111;color:#eee;border-radius:8px;padding:6px 8px;font-size:12px;line-height:1.45;white-space:pre-wrap;}
 .dshic-mtl-agent-msg.is-user{background:#1c1c1c;}
@@ -10960,10 +10967,10 @@ function queueThumb(assetId) {
       if (!blob || !blob.size) throw new Error(T('audioNeedFile'));
       const settings = loadSettings();
       const cfg = resolveAudioModelCfg(settings, n.data.audioModel || '');
+      if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.model) throw new Error(T('tlNeedOmni'));
       let durationSec = 0;
       let energy = [];
       let analysis = null;
-      const noteLocal = !cfg;
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) throw new Error(T('audioAnalyzeFail'));
       const ac = new AC();
@@ -10972,12 +10979,7 @@ function queueThumb(assetId) {
         durationSec = buf.duration || 0;
         const curve = rmsEnergy(buf, 0.25);
         energy = curve.energy;
-        if (!cfg) {
-          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.analyzeProgress = T('tlLocalFallback'); });
-          analysis = await postAudioUnderstand({
-            provider: null, audioBase64: '', format: 'wav', durationSec, energy, hopSec: curve.hopSec, truncated: false,
-          });
-        } else {
+        {
           const planned = await hostRpc('audioPlanWindows', { durationSec, sampleRate: 16000 });
           const windows = (planned && planned.windows && planned.windows.length) ? planned.windows : [{ startSec: 0, endSec: durationSec, offsetSec: 0 }];
           const parts = [];
@@ -11006,7 +11008,8 @@ function queueThumb(assetId) {
           nd.data.status = 'done';
           nd.data.error = null;
           nd.data.analyzeProgress = '';
-          nd.data.analyzeLocal = noteLocal || analysis.method !== 'model';
+          nd.data.analyzeLocal = analysis.method !== 'model';
+          nd.data.analyzeModel = cfg.model;
           nd.data.sectionsConfirmed = false;
           nd.data.durationSec = durationSec || analysis.durationSec || null;
           if (energy && energy.length) nd.data.peaks = energy.slice(0, 240);
@@ -15112,7 +15115,12 @@ function queueThumb(assetId) {
         const liveNode = S.graph.nodes[n.id];
         if (!(liveNode && liveNode.data && liveNode.data.assetId)) { toast(T('tlNeedAudio')); return; }
         const cfg = resolveAudioModelCfg(loadSettings(), (liveNode.data && liveNode.data.audioModel) || '');
-        if (!cfg) toast(T('tlNoProvider'));
+        if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.model) {
+          const msg = T('tlNeedOmni');
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.error = msg; });
+          toast(msg);
+          return;
+        }
         setBusy('analyze');
         try {
           await genAudioNode(liveNode);
@@ -15266,10 +15274,12 @@ function queueThumb(assetId) {
         setBusy('agent');
         try {
           await flushSave();
+          const cfg = resolveAudioModelCfg(loadSettings(), (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.audioModel) || '');
           const r = await hostRpc('audioAssistantTurn', {
             projectId: S.activeId, nodeId: n.id, message: text, mode,
             confirmed: !!(extra && extra.confirmed),
             modelText: (extra && extra.modelText) || '',
+            provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' } : null,
           });
           update((s) => {
             const nd = s.graph.nodes[n.id];
@@ -15278,12 +15288,14 @@ function queueThumb(assetId) {
             if (r && r.analysis) nd.data.analysis = r.analysis;
             if (r && r.sectionsConfirmed) nd.data.sectionsConfirmed = true;
             if (r && r.package) nd.data.mvPackage = r.package;
-            const say = (r && r.modelError ? ((r.say || '') + '\n' + r.modelError) : (r && r.say)) || '';
+            const say = [r && r.modelError, r && r.say].filter(Boolean).join('\n');
             const chat = Array.isArray(nd.data.assistantChat) ? nd.data.assistantChat : [];
             nd.data.assistantChat = chat.concat([{
               role: 'agent', text: say,
               card: r && r.needsConfirm ? { pending: r.pending, preview: r.preview } : null,
               modelError: (r && r.modelError) || '',
+              modelDetail: (r && r.modelDetail) || '',
+              modelLabel: (r && r.modelLabel) || '',
             }]).slice(-40);
           });
           if (r && !r.needsConfirm && r.clientJob === 'analyze') await startAnalyze();
@@ -15675,10 +15687,19 @@ function queueThumb(assetId) {
             h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '🎞'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, scenes.map((sc, i) => block(sc, i, 'shot')))),
             h('div', { className: 'dshic-mtl-playhead', style: { left: 22 + (dur ? (time / dur) * px : 0) } }))),
         agentOpen ? h('aside', { className: 'dshic-mtl-agent', 'data-tl-agent-panel': '1' },
+          h('div', { className: 'dshic-mtl-agent-model', 'data-tl-agent-model': '1' }, (() => {
+            const cfg = resolveAudioModelCfg(loadSettings(), (n.data && n.data.audioModel) || '');
+            if (!cfg || !cfg.model) return T('tlNeedOmni');
+            const place = /ap-southeast-1|singapore/i.test(cfg.baseUrl || '') ? '新加坡' : /dashscope-intl/i.test(cfg.baseUrl || '') ? '国际' : /dashscope\.aliyuncs\.com/i.test(cfg.baseUrl || '') ? '北京' : '';
+            return cfg.model + (place ? '（' + place + '）' : '');
+          })()),
           h('div', { className: 'dshic-mtl-agent-log' },
             ((n.data && n.data.assistantChat) || []).map((msg, i) => h('div', { key: 'c' + i, className: 'dshic-mtl-agent-msg' + (msg.role === 'user' ? ' is-user' : '') },
               msg.text || '',
-              msg.modelError ? h('div', null, h('button', { type: 'button', className: 'dshic-mini', onClick: () => openStudioModal('settings') }, T('tlOpenSettings'))) : null,
+              msg.modelError ? h('div', null,
+                h('button', { type: 'button', className: 'dshic-mini', onClick: () => openStudioModal('settings') }, T('tlOpenSettings')),
+                msg.modelDetail ? h('details', { className: 'dshic-mtl-agent-detail' }, h('summary', null, T('tlErrDetail')), h('pre', null, msg.modelDetail)) : null,
+              ) : null,
               msg.card ? h('div', { className: 'dshic-mtl-agent-card' },
                 T('tlAgentSpend') + ' ' + ((msg.card.preview && msg.card.preview.count) || 0) + ' · ' + ((msg.card.preview && msg.card.preview.seconds) || 0) + 's',
                 h('div', null,
