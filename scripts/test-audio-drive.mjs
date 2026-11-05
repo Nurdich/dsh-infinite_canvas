@@ -294,6 +294,33 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(/段落变化/.test(reasons[1].cutReason) && /落在重拍/.test(reasons[1].cutReason), '切开的理由没有写上');
 }
 
+{
+  const analysis = { durationSec: 20, bpm: 100, summary: '测试曲', sections: [{ label: 'verse', startSec: 0, endSec: 20, energy: 0.4 }] };
+  const pkg = AD.planMusicVideoPackage(analysis, { style: '冷' });
+  const state = {
+    hasAudio: true, hasAnalysis: true, confirmed: true, hasPackage: true,
+    styleText: '冷', analysis, mvPackage: pkg, durationSec: 20, mode: 'create',
+  };
+  const edited = AD.runMvAssistantTurn({ message: '第2段太长了', state, modelText: null, confirmed: false });
+  ok(edited.executed === 'edit_shot' && edited.needsConfirm === false, '改提示词不应被当成花钱：' + edited.executed);
+  ok(edited.state.mvPackage.scenes[1].awaitingConfirm, '被点名的段应停在待确认');
+  ok(edited.state.mvPackage.scenes[0].shots[0].videoPrompt === pkg.scenes[0].shots[0].videoPrompt, '助手改了一段却动了另一段');
+  ok(AD.assistantStateDigest(edited.state).scenes[1].awaitingConfirm === true, '下一轮读不到刚才的修改');
+  const blocked = AD.runMvAssistantTurn({ message: '生成全部', state: edited.state, confirmed: false });
+  ok(blocked.needsConfirm === true && blocked.executed == null && !blocked.clientJob, '未确认就发出了生成');
+  ok(blocked.preview && blocked.preview.count === edited.state.mvPackage.scenes.length, '确认卡没有段数');
+  const allowed = AD.runMvAssistantTurn({
+    message: '生成全部', state: edited.state, confirmed: true,
+    modelText: JSON.stringify({ say: '开始', tool: 'generate', args: { scope: 'all' } }),
+  });
+  ok(allowed.needsConfirm === false && allowed.clientJob === 'generate', '确认后仍不放行生成');
+  const styled = AD.runMvAssistantTurn({ message: '做一个搞笑风的 MV', state: { hasAudio: true }, confirmed: false });
+  ok(styled.executed === 'set_style' && /搞笑/.test(styled.state.styleText), '风格没有写进节点状态');
+  ok(AD.nextAutoStep({ hasAudio: true }).tool === 'analyze' && AD.nextAutoStep({ hasAudio: true }).spends === false, '自动推进不应第一步就生成');
+  const parsed = AD.parseAssistantAction('说明\n{"say":"只改这一镜","tool":"edit_shot","args":{"sceneIndex":0,"complaint":"多了一个人"}}');
+  ok(parsed && parsed.tool === 'edit_shot' && parsed.spends === false, '模型返回的工具没有解析出来');
+}
+
 // ---------- 对话工具：分析 → 分镜 → 成片声轨 ----------
 {
   const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ic-audio-'));

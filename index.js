@@ -41,6 +41,9 @@ import {
   splitSectionAt,
   mergeSectionWithNext,
   sectionCutReasons,
+  assistantSystemPrompt,
+  assistantStateDigest,
+  runMvAssistantTurn,
   groupShotsForClips,
   analysisDigest,
   AUDIO_ANALYSIS_SCHEMA,
@@ -4617,6 +4620,67 @@ export function apply(ctx) {
         else if (op === 'reasons') sections = sectionCutReasons(sections, { downbeats: args && args.downbeats, lyrics: args && args.lyrics });
         else throw new Error('未知的分段操作');
         return { ok: true, sections };
+      },
+      async audioAssistantTurn(args) {
+        const doc = readToolDoc(args);
+        const audio = findTypedNode(doc, args && args.nodeId, 'audio');
+        if (!audio) throw new Error('没有音频节点');
+        const data = audio.data || {};
+        const state = {
+          mode: (args && args.mode) || 'create',
+          hasAudio: !!(data.assetId),
+          hasAnalysis: !!(data.analysis && data.analysis.sections && data.analysis.sections.length),
+          confirmed: !!data.sectionsConfirmed,
+          hasPackage: !!(data.mvPackage && data.mvPackage.scenes && data.mvPackage.scenes.length),
+          styleText: data.styleText || '',
+          analysis: data.analysis || null,
+          mvPackage: data.mvPackage || null,
+          durationSec: data.durationSec || 0,
+        };
+        let modelText = (args && args.modelText) || null;
+        let modelError = '';
+        if (!modelText) {
+          try {
+            const res = await complete({
+              system: assistantSystemPrompt(),
+              user: JSON.stringify({ message: (args && args.message) || '', state: assistantStateDigest(state) }),
+              temperature: 0.2,
+            });
+            modelText = res && res.text;
+          } catch (e) {
+            modelError = String((e && e.message) || e);
+          }
+        }
+        const turn = runMvAssistantTurn({
+          message: args && args.message,
+          state,
+          modelText,
+          confirmed: !!(args && args.confirmed),
+        });
+        if (turn.state && turn.executed && !turn.clientJob) {
+          audio.data.styleText = turn.state.styleText || audio.data.styleText || '';
+          if (turn.state.analysis) audio.data.analysis = turn.state.analysis;
+          if (turn.state.confirmed) audio.data.sectionsConfirmed = true;
+          if (turn.state.mvPackage) audio.data.mvPackage = turn.state.mvPackage;
+          doc.updatedAt = Date.now();
+          writeToolDoc(args, doc);
+          markDocChanged(String((args && args.projectId) || ''), toolCanvasId(args));
+        }
+        return {
+          ok: true,
+          say: turn.say || '',
+          needsConfirm: !!turn.needsConfirm,
+          pending: turn.pending || null,
+          preview: turn.preview || null,
+          executed: turn.executed || null,
+          clientJob: turn.clientJob || null,
+          args: turn.args || null,
+          modelError,
+          styleText: audio.data.styleText || '',
+          sectionsConfirmed: !!audio.data.sectionsConfirmed,
+          analysis: audio.data.analysis || null,
+          package: audio.data.mvPackage || null,
+        };
       },
       async audioPlanStoryboard(args) {
         const a = args && args.analysis;
