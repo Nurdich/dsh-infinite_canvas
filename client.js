@@ -1182,6 +1182,12 @@ function revealCanvasInRight() {
       'tlRegenStale': '重生成过期段',
       'tlTakes': '备选',
       'tlGenDur': '生成时长',
+      'tlModeCreate': 'MV 创作',
+      'tlModeRemix': 'MV 复刻',
+      'tlUploadMusic': '上传音乐',
+      'tlDropAudio': '或把音频拖到这里',
+      'tlNeedAudio': '先上传音乐',
+      'tlReplaceAudio': '更换歌曲',
       'tlImport': '导入原片',
       'tlKeep': '保留原片',
       'tlJoin': '转场',
@@ -2218,6 +2224,12 @@ function revealCanvasInRight() {
       'tlRegenStale': 'Regenerate stale',
       'tlTakes': 'Takes',
       'tlGenDur': 'Gen length',
+      'tlModeCreate': 'Create MV',
+      'tlModeRemix': 'Remake MV',
+      'tlUploadMusic': 'Upload music',
+      'tlDropAudio': 'or drop audio here',
+      'tlNeedAudio': 'Upload music first',
+      'tlReplaceAudio': 'Replace song',
       'tlImport': 'Import source MV',
       'tlKeep': 'Keep original',
       'tlJoin': 'Transition',
@@ -3009,6 +3021,13 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-audio{width:100%;height:36px;display:block;}
 .dshic-mtl{display:flex;flex-direction:column;height:100%;min-height:0;background:#111;color:#f2f2f2;border-radius:0 0 12px 12px;overflow:hidden;}
 .dshic-mtl-preview{flex:1;min-height:120px;background:#000;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;}
+.dshic-mtl-modes{flex:none;display:flex;background:#161616;border-bottom:1px solid #2a2a2a;}
+.dshic-mtl-modes button{flex:1;height:28px;border:0;background:#161616;color:#aaa;cursor:pointer;font-size:12px;}
+.dshic-mtl-modes button.is-on{background:#111;color:#fff;}
+.dshic-mtl-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;width:100%;height:100%;}
+.dshic-mtl-upload{height:40px;padding:0 22px;border:0;border-radius:8px;background:#f2f2f2;color:#111;font-size:14px;cursor:pointer;}
+.dshic-mtl-upload:disabled{background:#333;color:#888;cursor:default;}
+.dshic-mtl-empty-hint{font-size:12px;color:#aaa;}
 .dshic-mtl-preview img,.dshic-mtl-preview video{width:100%;height:100%;object-fit:contain;background:#000;}
 .dshic-mtl-caption{max-width:78%;text-align:center;font-size:13px;line-height:1.55;color:#d5d5d5;letter-spacing:.04em;}
 .dshic-mtl-caption.is-plain{letter-spacing:0;color:#fff;}
@@ -14680,6 +14699,24 @@ function queueThumb(assetId) {
       ];
     }
 
+    /** 音乐时间轴空态 / 模式。创作不出现导入原片；没有歌曲时生成时间轴保持关闭。 */
+    function musicTimelineChrome(input) {
+      const o = input || {};
+      const hasAudio = !!o.hasAudio;
+      const busy = !!o.busy;
+      const mode = o.mode === 'remix' ? 'remix' : 'create';
+      const needAudio = mode === 'create' && !hasAudio;
+      return {
+        mode,
+        uploadDisabled: busy,
+        showEmpty: !hasAudio,
+        showImport: mode === 'remix',
+        showCast: mode === 'remix',
+        showReplace: hasAudio,
+        generateDisabled: busy || needAudio,
+        generateHint: needAudio ? 'need-audio' : '',
+      };
+    }
     function fmtClock(sec) {
       const s = Math.max(0, Math.floor(Number(sec) || 0));
       return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
@@ -14753,6 +14790,8 @@ function queueThumb(assetId) {
       const [busy, setBusy] = useState('');
       const [castName, setCastName] = useState('');
       const [tab, setTab] = useState('overview');
+      const [mode, setMode] = useState('create');
+      const chrome = musicTimelineChrome({ hasAudio: !!url, busy: !!busy, mode });
       const audioRef = useRef(null);
       const fileRef = useRef(null);
       const vidFileRef = useRef(null);
@@ -14832,10 +14871,14 @@ function queueThumb(assetId) {
           toast(String((e && e.message) || e));
         } finally { setBusy(''); }
       };
-      const onAudioFile = async (e) => {
-        const f = e.target.files && e.target.files[0];
-        e.target.value = '';
+      const isAudioFile = (f) => {
+        if (!f) return false;
+        if (f.type && String(f.type).startsWith('audio/')) return true;
+        return /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name || '');
+      };
+      const ingestAudioFile = async (f) => {
         if (!f) return;
+        if (!isAudioFile(f)) { toast(T('tlNeedAudio')); return; }
         const rec = await saveAssetRecord(S.activeId, 'audio', f, { name: f.name, source: 'upload', category: 'audio' }).catch((err) => {
           toast(T('uploadFailed') + '：' + String((err && err.message) || err));
           return null;
@@ -14853,7 +14896,23 @@ function queueThumb(assetId) {
         });
         flushSave();
       };
+      const onAudioFile = async (e) => {
+        const f = e.target.files && e.target.files[0];
+        e.target.value = '';
+        await ingestAudioFile(f);
+      };
+      const onDropAudio = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        ingestAudioFile(f);
+      };
       const buildTimeline = async () => {
+        const liveNode = S.graph.nodes[n.id];
+        if (!(liveNode && liveNode.data && liveNode.data.assetId)) {
+          toast(T('tlNeedAudio'));
+          return;
+        }
         setBusy('build');
         try {
           let analysis = n.data.analysis;
@@ -15047,18 +15106,34 @@ function queueThumb(assetId) {
         : '';
       const status = scene && scene.gen && scene.gen.status;
       const filterCls = flt === 'warm' ? ' is-warm' : flt === 'cool' ? ' is-cool' : flt === 'contrast' ? ' is-contrast' : '';
-      return h('div', { className: 'dshic-mtl', 'data-music-tl': '1', 'data-no-drag': '1', onPointerDown: (e) => e.stopPropagation() },
+      return h('div', {
+        className: 'dshic-mtl', 'data-music-tl': '1', 'data-no-drag': '1', 'data-tl-mode': chrome.mode,
+        onPointerDown: (e) => e.stopPropagation(),
+        onDragOver: chrome.showEmpty ? (e) => { e.preventDefault(); e.stopPropagation(); } : undefined,
+        onDrop: chrome.showEmpty ? onDropAudio : undefined,
+      },
         h('input', { ref: fileRef, type: 'file', accept: 'audio/*,.mp3,.wav,.m4a,.aac,.ogg', style: { display: 'none' }, onChange: onAudioFile }),
         h('input', { ref: vidFileRef, type: 'file', accept: 'video/*,.mp4,.mov,.webm', style: { display: 'none' }, onChange: importSource }),
+        h('div', { className: 'dshic-mtl-modes' },
+          h('button', { type: 'button', className: mode === 'create' ? 'is-on' : '', 'data-tl-mode-create': '1', onClick: () => setMode('create') }, T('tlModeCreate')),
+          h('button', { type: 'button', className: mode === 'remix' ? 'is-on' : '', 'data-tl-mode-remix': '1', onClick: () => setMode('remix') }, T('tlModeRemix'))),
         url ? h('audio', { ref: audioRef, src: url, preload: 'metadata' }) : null,
         h('div', { className: 'dshic-mtl-preview' + filterCls },
-          previewUrl
-            ? h('video', {
-              ref: previewRef, src: previewUrl, muted: true,
-              onLoadedMetadata: onPreviewMeta,
-            })
-            : h('div', { className: 'dshic-mtl-caption' + (sub === 'plain' ? ' is-plain' : '') }, sub === 'none' ? '' : caption),
-          sub !== 'none' && previewUrl ? h('div', { className: 'dshic-mtl-caption', style: { position: 'absolute', bottom: 8 } }, caption) : null),
+          chrome.showEmpty
+            ? h('div', { className: 'dshic-mtl-empty', 'data-tl-empty': '1', onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); }, onDrop: onDropAudio },
+              h('button', {
+                type: 'button', className: 'dshic-mtl-upload', 'data-tl-upload': '1',
+                disabled: chrome.uploadDisabled,
+                onClick: () => { const el = fileRef.current; if (el) el.click(); },
+              }, T('tlUploadMusic')),
+              h('div', { className: 'dshic-mtl-empty-hint' }, T('tlDropAudio')))
+            : (previewUrl
+              ? h('video', {
+                ref: previewRef, src: previewUrl, muted: true,
+                onLoadedMetadata: onPreviewMeta,
+              })
+              : h('div', { className: 'dshic-mtl-caption' + (sub === 'plain' ? ' is-plain' : '') }, sub === 'none' ? '' : caption)),
+          !chrome.showEmpty && sub !== 'none' && previewUrl ? h('div', { className: 'dshic-mtl-caption', style: { position: 'absolute', bottom: 8 } }, caption) : null),
         h('div', { className: 'dshic-mtl-transport' },
           h('button', { type: 'button', className: 'dshic-mtl-ico', title: T('tlUndo'), onClick: undo }, '↩'),
           h('button', { type: 'button', className: 'dshic-mtl-ico', title: T('tlRedo'), onClick: redo }, '↪'),
@@ -15075,18 +15150,30 @@ function queueThumb(assetId) {
             h('option', { value: 'cool' }, T('fltCool')),
             h('option', { value: 'contrast' }, T('fltContrast')))),
         h('div', { className: 'dshic-mtl-style' },
+          chrome.showReplace ? h('button', {
+            type: 'button', className: 'dshic-mini', 'data-tl-upload': '1',
+            disabled: chrome.uploadDisabled,
+            onClick: () => { const el = fileRef.current; if (el) el.click(); },
+          }, T('tlReplaceAudio')) : null,
           h('input', {
             value: n.data.styleText || '',
             placeholder: T('tlStylePh'),
             onChange: (e) => update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.styleText = e.target.value; }),
           }),
-          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: buildTimeline }, busy === 'build' ? '…' : T('tlGenerate')),
+          h('button', {
+            type: 'button', className: 'dshic-mini', 'data-tl-generate': '1',
+            disabled: chrome.generateDisabled,
+            title: chrome.generateHint === 'need-audio' ? T('tlNeedAudio') : T('tlGenerate'),
+            onClick: buildTimeline,
+          }, busy === 'build' ? '…' : T('tlGenerate')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: pushCanvas }, T('tlPush')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: genAll }, T('tlGenAll'))),
-        h('div', { className: 'dshic-mtl-style' },
-          h('input', { value: castName, onChange: (e) => setCastName(e.target.value), placeholder: T('tlCast') }),
-          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => { const el = vidFileRef.current; if (el) el.click(); } }, busy === 'remix' ? '…' : T('tlImport')),
-          h('button', { type: 'button', className: 'dshic-mini', disabled: !url, onClick: () => { const el = fileRef.current; if (el) el.click(); } }, T('audioUpload'))),
+        chrome.showImport ? h('div', { className: 'dshic-mtl-style', 'data-tl-remix': '1' },
+          chrome.showCast ? h('input', { 'data-tl-cast': '1', value: castName, onChange: (e) => setCastName(e.target.value), placeholder: T('tlCast') }) : null,
+          h('button', {
+            type: 'button', className: 'dshic-mini', 'data-tl-import': '1', disabled: !!busy,
+            onClick: () => { const el = vidFileRef.current; if (el) el.click(); },
+          }, busy === 'remix' ? '…' : T('tlImport'))) : null,
         scene ? h('div', { className: 'dshic-mtl-inspector' },
           h('span', null, T('tlStory')),
           h('textarea', { rows: 2, value: (shot && shot.visual) || '', onBlur: (e) => patchShot({ visual: e.target.value }) }),
@@ -22685,6 +22772,7 @@ const DIRECTOR_KEY_HELP = [
           // 按镜头切段（分段生成本身就是最容易出错的地方）：规划器 + 强弱模型分流 + 节点段区间解析
           // 供 scripts/test-segment-plan.mjs 直接断言
           window.__DSH_IC_SEGMENT__ = { planShotSegments, isCutPoint, segmentNeedsHardFrame, videoSegmentOf, shotContinuityPlan };
+          window.__DSH_IC_MTL__ = { musicTimelineChrome };
           window.__DSH_IC_STORYBOARD_PROMPT__ = { buildStoryboardVideoPrompt };
           // 3D 导演台：引擎在 assets/director/engine.js（代码分割），这里只导出面板与
           // 引擎加载器；引擎内部的纯函数由测试直接 ESM import engine.js 断言——

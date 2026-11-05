@@ -388,7 +388,34 @@ function loadSegmentPlanner() {
   });
   plugin.apply({ effect(fn) { fn(); }, locale: { register: noop, subscribe: () => () => {} }, slots: { inject(n, cb) { cb(); }, register: () => () => {} }, sidebarRightTabs: { register: () => () => {} } });
   if (!sandbox.window.__DSH_IC_SEGMENT__) throw new Error('未暴露 planShotSegments');
-  return sandbox.window.__DSH_IC_SEGMENT__;
+  const seg = sandbox.window.__DSH_IC_SEGMENT__;
+  seg.musicTimelineChrome = sandbox.window.__DSH_IC_MTL__ && sandbox.window.__DSH_IC_MTL__.musicTimelineChrome;
+  return seg;
+}
+
+{
+  const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+  const start = src.indexOf('function AudioNodeBody');
+  const end = src.indexOf('function nodeBody', start);
+  const body = src.slice(start, end);
+  ok(!/disabled:\s*!url/.test(body), '空节点的上传按钮仍因没有 url 而被禁用');
+  ok(/disabled:\s*chrome\.uploadDisabled/.test(body), '上传按钮没有走 uploadDisabled');
+  ok(/disabled:\s*chrome\.generateDisabled/.test(body), '生成时间轴没有走 generateDisabled');
+  ok(/chrome\.showImport\s*\?/.test(body), '导入原片没有按复刻模式收起');
+  ok(/data-tl-empty/.test(body) && /onDrop:\s*onDropAudio/.test(body), '空态缺少上传区或拖放');
+  ok(/useState\('create'\)/.test(body), '默认模式不是 MV 创作');
+  const ui = loadSegmentPlanner().musicTimelineChrome;
+  ok(typeof ui === 'function', '没有暴露 musicTimelineChrome');
+  const empty = ui({ hasAudio: false, busy: false, mode: 'create' });
+  ok(empty.uploadDisabled === false, '空节点上传按钮应该可点');
+  ok(empty.showEmpty === true, '没有歌曲时应显示空态');
+  ok(empty.showImport === false && empty.showCast === false, '创作模式不应出现导入原片或替换角色');
+  ok(empty.generateDisabled === true && empty.generateHint === 'need-audio', '没有歌曲时生成时间轴应该关闭并给出提示');
+  const ready = ui({ hasAudio: true, busy: false, mode: 'create' });
+  ok(ready.generateDisabled === false && ready.showEmpty === false && ready.showImport === false, '有歌曲的创作模式应能生成时间轴且仍不显示导入');
+  const remix = ui({ hasAudio: false, busy: false, mode: 'remix' });
+  ok(remix.showImport === true && remix.showCast === true, '复刻模式应显示导入原片和替换角色');
+  ok(ui({ hasAudio: false, busy: true, mode: 'create' }).uploadDisabled === true, '忙时上传才应禁用');
 }
 
 if (errs.length) {
