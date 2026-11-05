@@ -1208,6 +1208,10 @@ function revealCanvasInRight() {
       'tlStepConfirm': '分段确认',
       'tlStepStyle': '风格与时间轴',
       'tlStepPush': '推到画布',
+      'caTitle': '画布助手',
+      'caPh': '跟助手说，例如：把选中的节点改一下',
+      'caNone': '未选中节点',
+      'caHide': '收起',
       'tlAgent': '助手',
       'tlAgentPh': '跟助手说，例如：做一个搞笑风的 MV',
       'tlAgentAuto': '自动推进',
@@ -2277,6 +2281,10 @@ function revealCanvasInRight() {
       'tlStepConfirm': 'Confirm sections',
       'tlStepStyle': 'Style and timeline',
       'tlStepPush': 'Push to canvas',
+      'caTitle': 'Canvas assistant',
+      'caPh': 'Tell the assistant, for example: edit the selected node',
+      'caNone': 'Nothing selected',
+      'caHide': 'Hide',
       'tlAgent': 'Assistant',
       'tlAgentPh': 'Tell the assistant, for example: make a funny MV',
       'tlAgentAuto': 'Auto',
@@ -3084,6 +3092,17 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-mtl-agent-card{background:#111;border:1px solid #333;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;}
 .dshic-mtl-agent-form{display:flex;gap:4px;padding:8px;border-top:1px solid #2a2a2a;}
 .dshic-mtl-agent-form input{flex:1;min-width:0;height:28px;background:#111;color:#eee;border:1px solid #333;border-radius:6px;padding:0 8px;}
+.dshic-assist{flex:none;width:300px;display:flex;flex-direction:column;min-height:0;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);border-left:1px solid var(--dshic-line2);}
+.dshic-assist-hd{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1);font-size:12px;}
+.dshic-assist-chip{flex:none;font-size:11px;padding:4px 10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);}
+.dshic-assist-log{flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:6px;min-height:0;}
+.dshic-assist-msg{font-size:12px;line-height:1.45;white-space:pre-wrap;}
+.dshic-assist-msg.is-user{color:var(--dsw-alias-fg-primary);}
+.dshic-assist-step{display:block;width:100%;text-align:left;font-size:11px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);border:1px solid var(--dshic-line2);border-radius:6px;padding:4px 6px;cursor:pointer;}
+.dshic-assist-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dshic-line2);border-radius:8px;padding:8px;font-size:12px;display:flex;flex-direction:column;gap:6px;}
+.dshic-assist-form{flex:none;display:flex;gap:6px;padding:8px;background:var(--dsw-alias-bg-layer-1);}
+.dshic-assist-form input{flex:1;min-width:0;height:28px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-fg-primary);border:1px solid var(--dshic-line2);border-radius:6px;padding:0 8px;}
+.dshic-assist-tab{position:absolute;right:8px;top:8px;z-index:6;}
 .dshic-mtl-preview{flex:1;min-height:120px;background:#000;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;}
 .dshic-mtl-modes{flex:none;display:flex;background:#161616;border-bottom:1px solid #2a2a2a;}
 .dshic-mtl-modes button{flex:1;height:28px;border:0;background:#161616;color:#aaa;cursor:pointer;font-size:12px;}
@@ -4031,6 +4050,16 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       const doc = lsGet(LS_GRAPH + canvasDocKey(pid, canvasId == null ? DEFAULT_CANVAS_ID : canvasId), null);
       return doc ? normalizeGraphDoc(doc) : doc;
     }
+    function assistantStoreKey(pid, canvasId) {
+      return 'dshic.canvasAssistant:' + String(pid || '') + ':' + String(canvasId == null ? '' : canvasId);
+    }
+    function loadAssistantChat(pid, canvasId) {
+      const v = lsGet(assistantStoreKey(pid, canvasId), []);
+      return Array.isArray(v) ? v : [];
+    }
+    function saveAssistantChat(pid, canvasId, chat) {
+      lsSet(assistantStoreKey(pid, canvasId), Array.isArray(chat) ? chat.slice(-40) : []);
+    }
     function saveGraphDoc(pid, graph, canvasId) {
       lsSet(LS_GRAPH + canvasDocKey(pid, canvasId == null ? DEFAULT_CANVAS_ID : canvasId), graph);
     }
@@ -4078,6 +4107,8 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
         s.activeCanvasId = next;
         s.graph = { nodes: doc.nodes || {}, edges: doc.edges || [], view: doc.view || { x: 60, y: 40, scale: 1 } };
         s.sel = new Set(); s.selEdge = null; s.composerId = null;
+        s.assistantScope = null;
+        s.assistantChat = loadAssistantChat(S.activeId, next);
         s.inlineEdit = null; // 切画布取消未提交的就地改名（它属于上一张画布）
         s.panelModal = null;
         V.x = s.graph.view.x; V.y = s.graph.view.y; V.scale = s.graph.view.scale;
@@ -9890,6 +9921,10 @@ function queueThumb(assetId) {
       selEdge: null,
       running: false,
       rightOpen: true,
+      assistantOpen: true,
+      assistantScope: null,
+      assistantChat: [],
+      assistantBusy: false,
       rightTab: 'projects',
       // 多画布预留：当前项目下只有默认画布（null）；将来 = 子目录/子画布 id
       activeCanvasId: null,
@@ -10000,6 +10035,7 @@ function queueThumb(assetId) {
             ts: Date.now(), // 推送发出时刻：Host 据此区分"撤销恢复"（清墓碑）与"陈旧推送"（墓碑继续生效）
             nodes: S.graph.nodes, edges: S.graph.edges, view: S.graph.view,
             tombstones: S.graph.tombstones || [], // 本地删除标记：Host 依据它判定节点真的被删
+            ...(Array.isArray(S.assistantChat) ? { assistantChat: S.assistantChat.slice(-40) } : {}),
             ...(bibleField.__bibleChanged ? { bible: bibleField.bible } : {}),
           },
         }).then((r) => {
@@ -10012,6 +10048,38 @@ function queueThumb(assetId) {
           if (!syncWarned) { syncWarned = true; toast(T('syncFailed') + '：' + String((err && err.message) || err)); }
         });
       } catch { /* 忽略 */ }
+    }
+    async function sendCanvasAssistant(message, extra) {
+      const text = String(message || '').trim();
+      if (!text && !(extra && extra.confirmed)) return;
+      if (!S.activeId) return;
+      update((s) => { s.assistantBusy = true; });
+      try {
+        await flushSave();
+        const cfg = resolveAudioModelCfg(loadSettings(), '');
+        const r = await hostRpc('canvasAssistantTurn', {
+          projectId: S.activeId,
+          canvasId: activeCanvasId(),
+          message: text,
+          selection: [...S.sel],
+          scopeId: S.assistantScope || '',
+          confirmed: !!(extra && extra.confirmed),
+          pending: (extra && extra.pending) || null,
+          provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' } : null,
+        });
+        const full = await hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() });
+        mergeHostDoc(S.activeId, full, activeCanvasId());
+        const chat = (r && Array.isArray(r.chat) && r.chat) || (S.assistantChat || []);
+        update((s) => { s.assistantChat = chat; s.assistantBusy = false; });
+        saveAssistantChat(S.activeId, activeCanvasId(), chat);
+        flushSave();
+      } catch (e) {
+        update((s) => {
+          s.assistantBusy = false;
+          s.assistantChat = (s.assistantChat || []).concat([{ role: 'assistant', text: String((e && e.message) || e), modelError: 'llm' }]).slice(-40);
+        });
+        saveAssistantChat(S.activeId, activeCanvasId(), S.assistantChat);
+      }
     }
     function initStore() {
       S.projects = lsGet(LS_PROJECTS, []);
@@ -10048,6 +10116,7 @@ function queueThumb(assetId) {
       }
       if (stale) { try { saveGraphDoc(S.activeId, S.graph); } catch { /* 忽略 */ } }
       V.x = S.graph.view.x; V.y = S.graph.view.y; V.scale = S.graph.view.scale;
+      S.assistantChat = loadAssistantChat(S.activeId, S.activeCanvasId);
       S.ready = true;
       // 预热设定集快照：页面加载时视本地版本为"已同步"，避免把旧版本推回覆盖对话侧的新设定
       for (const p of S.projects) biblePushSnap.set(p.id, bibleSnapshot(p.id));
@@ -10064,6 +10133,8 @@ function queueThumb(assetId) {
         s.graph = { nodes: doc.nodes || {}, edges: doc.edges || [], view: doc.view || { x: 60, y: 40, scale: 1 } };
         s.sel = new Set(); s.selEdge = null;
         s.composerId = null;
+        s.assistantScope = null;
+        s.assistantChat = loadAssistantChat(pid, nextCanvas);
         s.inlineEdit = null; // 切项目取消未提交的就地改名（它属于上一个项目）
         // 注意：不复位 s.running —— 否则运行中切项目会让"运行工作流"重新可点，并发跑同一节点
         V.x = s.graph.view.x; V.y = s.graph.view.y; V.scale = s.graph.view.scale;
@@ -14932,8 +15003,6 @@ function queueThumb(assetId) {
       const [castName, setCastName] = useState('');
       const [tab, setTab] = useState('overview');
       const [mode, setMode] = useState('create');
-      const [agentOpen, setAgentOpen] = useState(false);
-      const [agentDraft, setAgentDraft] = useState('');
       const [viewW, setViewW] = useState(640);
       const scrollRef = useRef(null);
       const chrome = musicTimelineChrome({
@@ -15265,64 +15334,6 @@ function queueThumb(assetId) {
         if (!vid) { toast(T('tlPush')); return; }
         await runGenNode(vid);
       };
-      const askAssistant = async (message, extra) => {
-        const text = String(message || '').trim();
-        if (!text && !(extra && extra.confirmed)) return;
-        update((s) => {
-          const nd = s.graph.nodes[n.id];
-          if (!nd) return;
-          const chat = Array.isArray(nd.data.assistantChat) ? nd.data.assistantChat : [];
-          nd.data.assistantChat = chat.concat([{ role: 'user', text }]).slice(-40);
-        });
-        setAgentDraft('');
-        setBusy('agent');
-        try {
-          await flushSave();
-          const cfg = resolveAudioModelCfg(loadSettings(), (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.audioModel) || '');
-          const r = await hostRpc('audioAssistantTurn', {
-            projectId: S.activeId, nodeId: n.id, message: text, mode,
-            confirmed: !!(extra && extra.confirmed),
-            modelText: (extra && extra.modelText) || '',
-            provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' } : null,
-          });
-          update((s) => {
-            const nd = s.graph.nodes[n.id];
-            if (!nd) return;
-            if (r && r.styleText) nd.data.styleText = r.styleText;
-            if (r && r.analysis) nd.data.analysis = r.analysis;
-            if (r && r.sectionsConfirmed) nd.data.sectionsConfirmed = true;
-            if (r && r.package) nd.data.mvPackage = r.package;
-            const say = [r && r.modelError, r && r.say].filter(Boolean).join('\n');
-            const chat = Array.isArray(nd.data.assistantChat) ? nd.data.assistantChat : [];
-            nd.data.assistantChat = chat.concat([{
-              role: 'agent', text: say,
-              card: r && r.needsConfirm ? { pending: r.pending, preview: r.preview } : null,
-              modelError: (r && r.modelError) || '',
-              modelDetail: (r && r.modelDetail) || '',
-              modelLabel: (r && r.modelLabel) || '',
-            }]).slice(-40);
-          });
-          if (r && !r.needsConfirm && r.clientJob === 'analyze') await startAnalyze();
-          else if (r && !r.needsConfirm && r.clientJob === 'push') await pushCanvas();
-          else if (r && !r.needsConfirm && r.clientJob === 'generate') {
-            if (r.args && r.args.scope === 'one') await genSceneAt(Number(r.args.sceneIndex) || 0);
-            else await genAll();
-          } else if (r && !r.needsConfirm && r.clientJob === 'compose') {
-            const cut = owned().find((nd) => nd.type === 'finalcut');
-            if (cut) await runGenNode(cut);
-          } else if (r && !r.needsConfirm && r.clientJob === 'remix') {
-            const el = vidFileRef.current;
-            if (el) el.click();
-          }
-        } catch (e) {
-          update((s) => {
-            const nd = s.graph.nodes[n.id];
-            if (!nd) return;
-            const chat = Array.isArray(nd.data.assistantChat) ? nd.data.assistantChat : [];
-            nd.data.assistantChat = chat.concat([{ role: 'agent', text: String((e && e.message) || e), modelError: 'llm' }]).slice(-40);
-          });
-        } finally { setBusy(''); }
-      };
       const genSceneAt = async (index) => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
         const imgs = owned().filter((nd) => nd.type === 'image' && nd.data && nd.data.mvIndex === index && !String(nd.data.mvKey || '').includes(':src:'));
@@ -15473,7 +15484,28 @@ function queueThumb(assetId) {
         h('div', { className: 'dshic-mtl-modes' },
           h('button', { type: 'button', className: mode === 'create' ? 'is-on' : '', 'data-tl-mode-create': '1', onClick: () => setMode('create') }, T('tlModeCreate')),
           h('button', { type: 'button', className: mode === 'remix' ? 'is-on' : '', 'data-tl-mode-remix': '1', onClick: () => setMode('remix') }, T('tlModeRemix')),
-          h('button', { type: 'button', className: agentOpen ? 'is-on' : '', 'data-tl-agent': '1', onClick: () => setAgentOpen((v) => !v) }, T('tlAgent'))),
+          h('button', {
+            type: 'button', className: 'is-on', 'data-tl-agent': '1',
+            onClick: () => {
+              update((s) => {
+                s.assistantOpen = true;
+                s.assistantScope = n.id;
+                s.sel = new Set([n.id]);
+                const nodeChat = n.data && n.data.assistantChat;
+                if (!n.data.assistantMigrated && Array.isArray(nodeChat) && nodeChat.length) {
+                  const moved = nodeChat.map((m) => ({
+                    role: m.role === 'agent' ? 'assistant' : (m.role || 'assistant'),
+                    text: m.text || '',
+                    at: Date.now(),
+                  }));
+                  s.assistantChat = (s.assistantChat || []).concat(moved).slice(-40);
+                  const nd = s.graph.nodes[n.id];
+                  if (nd) nd.data.assistantMigrated = true;
+                }
+              });
+              saveAssistantChat(S.activeId, activeCanvasId(), S.assistantChat);
+            },
+          }, T('tlAgent'))),
         url ? h('audio', {
           ref: audioRef, src: url, preload: 'metadata',
           onLoadedMetadata: (e) => {
@@ -15729,41 +15761,7 @@ function queueThumb(assetId) {
             }, l.text || '')))),
             h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '◎'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, scenes.map((sc, i) => block(sc, i, 'cont')))),
             h('div', { className: 'dshic-mtl-track' }, h('div', { className: 'dshic-mtl-gutter' }, '🎞'), h('div', { className: 'dshic-mtl-lane', style: { width: px } }, scenes.map((sc, i) => block(sc, i, 'shot')))),
-            h('div', { className: 'dshic-mtl-playhead', style: { left: 22 + (dur ? (time / dur) * px : 0) } }))),
-        agentOpen ? h('aside', { className: 'dshic-mtl-agent', 'data-tl-agent-panel': '1' },
-          h('div', { className: 'dshic-mtl-agent-model', 'data-tl-agent-model': '1' }, (() => {
-            const cfg = resolveAudioModelCfg(loadSettings(), (n.data && n.data.audioModel) || '');
-            if (!cfg || !cfg.model) return T('tlNeedOmni');
-            const place = /ap-southeast-1|singapore/i.test(cfg.baseUrl || '') ? '新加坡' : /dashscope-intl/i.test(cfg.baseUrl || '') ? '国际' : /dashscope\.aliyuncs\.com/i.test(cfg.baseUrl || '') ? '北京' : '';
-            return cfg.model + (place ? '（' + place + '）' : '');
-          })()),
-          h('div', { className: 'dshic-mtl-agent-log' },
-            ((n.data && n.data.assistantChat) || []).map((msg, i) => h('div', { key: 'c' + i, className: 'dshic-mtl-agent-msg' + (msg.role === 'user' ? ' is-user' : '') },
-              msg.text || '',
-              msg.modelError ? h('div', null,
-                h('button', { type: 'button', className: 'dshic-mini', onClick: () => openStudioModal('settings') }, T('tlOpenSettings')),
-                msg.modelDetail ? h('details', { className: 'dshic-mtl-agent-detail' }, h('summary', null, T('tlErrDetail')), h('pre', null, msg.modelDetail)) : null,
-              ) : null,
-              msg.card ? h('div', { className: 'dshic-mtl-agent-card' },
-                T('tlAgentSpend') + ' ' + ((msg.card.preview && msg.card.preview.count) || 0) + ' · ' + ((msg.card.preview && msg.card.preview.seconds) || 0) + 's',
-                h('div', null,
-                  h('button', {
-                    type: 'button', className: 'dshic-mtl-go',
-                    onClick: () => askAssistant(T('tlAgentConfirm'), {
-                      confirmed: true,
-                      modelText: JSON.stringify({ say: T('tlAgentConfirm'), tool: msg.card.pending && msg.card.pending.tool, args: (msg.card.pending && msg.card.pending.args) || {} }),
-                    }),
-                  }, T('tlAgentConfirm')),
-                  ' ',
-                  h('button', { type: 'button', className: 'dshic-mini', onClick: () => setAgentDraft('') }, T('tlAgentRevise')))) : null))),
-          h('div', { className: 'dshic-mtl-agent-form' },
-            h('input', {
-              'data-tl-agent-input': '1', value: agentDraft, placeholder: T('tlAgentPh'),
-              onChange: (e) => setAgentDraft(e.target.value),
-              onKeyDown: (e) => { if (e.key === 'Enter') askAssistant(agentDraft); },
-            }),
-            h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => askAssistant(agentDraft) }, T('tlAgent')),
-            h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => askAssistant('继续自动') }, T('tlAgentAuto')))) : null);
+            h('div', { className: 'dshic-mtl-playhead', style: { left: 22 + (dur ? (time / dur) * px : 0) } }))));
     }
     function nodeBody(n, edgeSig) {
       // 兜底：文档入口已归一，但历史上存进撤销快照/外部注入的节点类型仍可能是旧名
@@ -22149,6 +22147,80 @@ const DIRECTOR_KEY_HELP = [
       }
     }
 
+    function CanvasAssistant() {
+      const [draft, setDraft] = useState('');
+      const selection = [...S.sel];
+      const digestNodes = Object.values(S.graph.nodes || {}).map((n) => ({
+        id: n.id,
+        type: n.type,
+        label: (n.data && n.data.label) || '',
+        selected: selection.includes(n.id),
+      }));
+      const chipNode = digestNodes.find((n) => n.selected) || digestNodes.find((n) => n.id === S.assistantScope);
+      const typeName = chipNode ? ({
+        image: '图片节点', video: '视频节点', audio: '音频节点', text: '文本节点',
+        script: '剧本节点', storyboard: '分镜节点', finalcut: '成片节点',
+      }[chipNode.type] || (chipNode.type + '节点')) : '';
+      const chip = chipNode ? ('当前：' + (chipNode.label || chipNode.id) + ' ' + typeName) : T('caNone');
+      const cfg = resolveAudioModelCfg(loadSettings(), '');
+      const place = cfg && /ap-southeast-1|singapore/i.test(cfg.baseUrl || '') ? '新加坡'
+        : cfg && /dashscope-intl/i.test(cfg.baseUrl || '') ? '国际'
+          : cfg && /dashscope\.aliyuncs\.com/i.test(cfg.baseUrl || '') ? '北京' : '';
+      const modelLine = cfg && cfg.model ? (cfg.model + (place ? '（' + place + '）' : '')) : T('tlNeedOmni');
+      useEffect(() => {
+        if (!S.activeId || (S.assistantChat || []).length) return undefined;
+        let stop = false;
+        hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() }).then((full) => {
+          if (stop || !full || !Array.isArray(full.assistantChat) || !full.assistantChat.length) return;
+          if ((S.assistantChat || []).length) return;
+          update((s) => { s.assistantChat = full.assistantChat; });
+          saveAssistantChat(S.activeId, activeCanvasId(), full.assistantChat);
+        }).catch(() => {});
+        return () => { stop = true; };
+      }, [S.activeId, S.activeCanvasId, (S.assistantChat || []).length]);
+      if (!S.assistantOpen) {
+        return h('aside', { className: 'dshic-assist', style: { width: 48 }, 'data-canvas-assistant': 'closed' },
+          h('button', {
+            type: 'button', className: 'dshic-mini',
+            onClick: () => update((s) => { s.assistantOpen = true; }),
+          }, T('tlAgent')));
+      }
+      return h('aside', { className: 'dshic-assist', 'data-canvas-assistant': 'open' },
+        h('div', { className: 'dshic-assist-hd' },
+          h('strong', null, T('caTitle')),
+          h('span', { style: { flex: 1, fontSize: 11, opacity: 0.8 } }, modelLine),
+          h('button', { type: 'button', className: 'dshic-mini', onClick: () => update((s) => { s.assistantOpen = false; }) }, T('caHide'))),
+        h('div', { className: 'dshic-assist-chip', 'data-canvas-assistant-chip': '1' }, chip),
+        h('div', { className: 'dshic-assist-log' },
+          (S.assistantChat || []).map((msg, i) => h('div', { key: 'a' + i, className: 'dshic-assist-msg' + (msg.role === 'user' ? ' is-user' : '') },
+            msg.text || '',
+            (msg.steps || []).map((step, j) => h('button', {
+              key: 's' + j, type: 'button', className: 'dshic-assist-step',
+              onClick: () => { if (step.nodeId) update((s) => { s.sel = new Set([step.nodeId]); }); },
+            }, (step.tool || '') + (step.nodeId ? ' · ' + step.nodeId : '') + (step.ok === false ? ' · ' + (step.error || '') : ''))),
+            msg.modelError ? h('div', null,
+              h('button', { type: 'button', className: 'dshic-mini', onClick: () => openStudioModal('settings') }, T('tlOpenSettings')),
+              msg.modelDetail ? h('details', { className: 'dshic-mtl-agent-detail' }, h('summary', null, T('tlErrDetail')), h('pre', null, msg.modelDetail)) : null,
+            ) : null,
+            msg.needsConfirm ? h('div', { className: 'dshic-assist-card' },
+              msg.text || '',
+              h('div', null,
+                h('button', {
+                  type: 'button', className: 'dshic-mini',
+                  onClick: () => sendCanvasAssistant(T('tlAgentConfirm'), { confirmed: true, pending: msg.pending }),
+                }, T('tlAgentConfirm'))),
+              ) : null))),
+        h('div', { className: 'dshic-assist-form' },
+          h('input', {
+            'data-canvas-assistant-input': '1', value: draft, placeholder: T('caPh'),
+            onChange: (e) => setDraft(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') { sendCanvasAssistant(draft); setDraft(''); } },
+          }),
+          h('button', {
+            type: 'button', className: 'dshic-mini', disabled: !!S.assistantBusy,
+            onClick: () => { sendCanvasAssistant(draft); setDraft(''); },
+          }, T('tlAgent'))));
+    }
     function CanvasPage() {
       useApp();
       const rootRef = useRef(null);
@@ -22305,6 +22377,7 @@ const DIRECTOR_KEY_HELP = [
             ) : null,
           ),
           S.rightOpen ? h(Rightbar) : null,
+          h(CanvasAssistant),
         ),
         h(StudioModal),          // 资产 + 设定集统一弹窗（单例；S.panelModal 控制）
         h(DirectorStage),        // 3D 导演台（全屏浮层；左侧图标列入口，S.directorOpen 控制）
