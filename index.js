@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizeSkillProfile, DEFAULT_SKILL_PROFILE } from './index-core-skill-profile.js';
+import { mergeDocWrite } from './gen-pool.js';
 import {
   SUGGESTED_MODEL_ID,
   USER_MODEL_NAME,
@@ -2384,7 +2385,9 @@ function readToolDoc(args) {
 function writeToolDoc(args, doc) {
   const pid = String((args && args.projectId) || '');
   const cid = toolCanvasId(args);
-  writeCanvasDoc(pid, cid, doc);
+  let fresh = null;
+  try { fresh = readToolDoc(args); } catch { fresh = null; }
+  writeCanvasDoc(pid, cid, mergeDocWrite(fresh, doc));
   markDocChanged(pid, cid);
   return cid;
 }
