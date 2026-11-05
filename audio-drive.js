@@ -183,6 +183,90 @@ export function pushAttempt(history, entry) {
   return list.slice(-20);
 }
 
+/** 一个镜头要用到的角色和场景。场景来自 shot.scene。 */
+export function shotRefNames(shot) {
+  const s = shot || {};
+  const characters = Array.isArray(s.characters) ? s.characters.map((n) => String(n || '').trim()).filter(Boolean) : [];
+  const scene = String(s.scene || '').trim();
+  return { characters, locations: scene ? [scene] : [] };
+}
+
+function refRow(states, role, name) {
+  return (states || []).find((s) => s && s.role === role && s.name === name) || null;
+}
+
+/** 这个镜头的分镜图能不能画：每个角色和场景都要有图，并且已定稿。 */
+export function missingRefsForShot(shot, states) {
+  const need = shotRefNames(shot);
+  const missing = [];
+  for (const name of need.characters) {
+    const row = refRow(states, 'char', name);
+    if (!row || !row.assetId) missing.push({ role: 'char', name, why: 'missing' });
+    else if (!row.locked) missing.push({ role: 'char', name, why: 'unlocked' });
+  }
+  for (const name of need.locations) {
+    const row = refRow(states, 'loc', name);
+    if (!row || !row.assetId) missing.push({ role: 'loc', name, why: 'missing' });
+    else if (!row.locked) missing.push({ role: 'loc', name, why: 'unlocked' });
+  }
+  return missing;
+}
+
+export function refProgress(states) {
+  const list = states || [];
+  const tally = (role) => {
+    const rows = list.filter((s) => s && s.role === role);
+    return {
+      total: rows.length,
+      have: rows.filter((s) => s.assetId).length,
+      locked: rows.filter((s) => s.assetId && s.locked).length,
+    };
+  };
+  const characters = tally('char');
+  const locations = tally('loc');
+  const shots = tally('shot');
+  const videos = tally('video');
+  let stage = 'refs';
+  if (characters.locked >= characters.total && locations.locked >= locations.total) stage = shots.have >= shots.total ? 'videos' : 'shots';
+  return { characters, locations, shots, videos, stage };
+}
+
+/** 沿连线找出下游节点。锁定的设定重新生成后，这些分镜和视频要标成需重生成。 */
+export function downstreamOf(edges, id) {
+  const out = [];
+  const seen = new Set();
+  const walk = (from) => {
+    for (const e of edges || []) {
+      if (!e || e.fromNode !== from || seen.has(e.toNode)) continue;
+      seen.add(e.toNode);
+      out.push(e.toNode);
+      walk(e.toNode);
+    }
+  };
+  walk(id);
+  return out;
+}
+
+/**
+ * 铺到画布时的真实连线：角色/场景图 → 每个用到它们的分镜图；
+ * 第一张分镜图 → 该段视频的首帧；角色图同时进视频参考。
+ */
+export function mvWirePlan(pkg) {
+  const edges = [];
+  const scenes = (pkg && pkg.scenes) || [];
+  scenes.forEach((sc, si) => {
+    (sc.shots || []).forEach((shot, shi) => {
+      const shotKey = 'kf:' + si + ':' + shi;
+      const names = shotRefNames(shot);
+      for (const name of names.characters) edges.push({ fromRole: 'char', fromName: name, toRole: 'shot', toKey: shotKey, toPort: 'ref' });
+      for (const name of names.locations) edges.push({ fromRole: 'loc', fromName: name, toRole: 'shot', toKey: shotKey, toPort: 'ref' });
+      edges.push({ fromRole: 'shot', fromKey: shotKey, toRole: 'video', toKey: 'vid:' + si, toPort: shi === 0 ? 'frame' : 'ref' });
+      for (const name of names.characters) edges.push({ fromRole: 'char', fromName: name, toRole: 'video', toKey: 'vid:' + si, toPort: 'ref' });
+    });
+  });
+  return edges;
+}
+
 /** 上传后的时长：解码结果优先，其次 metadata，其次节点上已存的值。都没有就是 0，不能假装有时长。 */
 export function readAudioDuration(src) {
   const o = src || {};
@@ -591,6 +675,12 @@ export function canvasDigest(graph, selection) {
       label: String(d.label || '').slice(0, 40),
       status: d.status || '',
       hasAsset: !!(d.assetId || d.url),
+      assetId: d.assetId || '',
+      mvRole: d.mvRole || '',
+      mvFrom: d.mvFrom || '',
+      refName: d.refName || '',
+      refLock: !!d.refLock,
+      needRegen: !!d.needRegen,
       duration: d.duration || d.durationSec || null,
       count: d.count || null,
       model: d.imageModel || d.videoModel || d.model || '',
@@ -694,7 +784,7 @@ export function canvasPreviewLine(preview) {
 }
 
 export function gateCanvasAction(action, opts) {
-  if (action && action.clientJob === 'regen-failed') {
+  if (action && (action.clientJob === 'regen-failed' || action.clientJob === 'gen-refs' || action.clientJob === 'gen-shots' || action.clientJob === 'gen-videos')) {
     if (action.spends && !(opts && opts.confirmed)) {
       const count = (action.args && action.args.count) || 1;
       return { allow: false, say: '将按失败原因重生成 ' + count + ' 项。', preview: { kind: 'run', count, model: (opts && opts.modelLabel) || '' } };
@@ -785,6 +875,27 @@ function audioNode(digest, scopeId) {
 export function keywordCanvasAction(message, digest, scopeId) {
   const text = String(message || '');
   const target = selectedOrScope(digest, scopeId);
+  if (/生成全部|生成当前|到结尾|分镜图|出分镜/.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    const kids = ((digest && digest.nodes) || []).filter((n) => audio && n.mvFrom === audio.id);
+    if (!kids.length) return { tool: '', say: '先把时间轴推到画布，再生成角色和场景设定。' };
+    const progress = refProgress(kids.map((n) => ({ role: n.mvRole, name: n.refName, assetId: n.assetId, locked: n.refLock })));
+    const missingRefs = (progress.characters.total - progress.characters.have) + (progress.locations.total - progress.locations.have);
+    if (missingRefs > 0) {
+      return { tool: '', clientJob: 'gen-refs', spends: true, args: { count: missingRefs, audioId: audio && audio.id }, say: '先生成角色和场景设定，共 ' + missingRefs + ' 张。定稿之后才能出分镜。' };
+    }
+    if (progress.characters.locked < progress.characters.total || progress.locations.locked < progress.locations.total) {
+      return { tool: '', say: '角色和场景图还没定稿。定稿后才能生成分镜。角色 ' + progress.characters.locked + '/' + progress.characters.total + '，场景 ' + progress.locations.locked + '/' + progress.locations.total + '。' };
+    }
+    if (progress.shots.have < progress.shots.total) {
+      const n = progress.shots.total - progress.shots.have;
+      return { tool: '', clientJob: 'gen-shots', spends: true, args: { count: n, audioId: audio && audio.id }, say: '角色和场景已定稿，将生成分镜图 ' + n + ' 张。' };
+    }
+    if (/视频|全部|到结尾/.test(text) && progress.videos.have < progress.videos.total) {
+      const n = progress.videos.total - progress.videos.have;
+      return { tool: '', clientJob: 'gen-videos', spends: true, args: { count: n, audioId: audio && audio.id }, say: '分镜图已齐，将生成视频 ' + n + ' 段。' };
+    }
+  }
   if (/为什么失败|失败原因/.test(text)) {
     const f = target && target.failure;
     if (!f) return { tool: '', say: '当前没有失败记录。' };

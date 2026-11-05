@@ -1171,6 +1171,14 @@ function revealCanvasInRight() {
       'tlPush': '推到画布',
       'tlGenAll': '生成全部',
       'tlRetryFailed': '重生成失败项',
+      'tlLock': '定稿',
+      'tlLocked': '已定稿',
+      'tlNeedRedo': '需重生成',
+      'tlLockFirst': '请先定稿角色和场景',
+      'tlRefStage': '角色/场景设定',
+      'tlShotStage': '分镜图',
+      'tlVideoStage': '视频',
+      'tlRelock': '重新生成已定稿的设定，下游分镜和视频会标成需重生成',
       'tlZoom': '缩放',
       'tlStory': '剧情',
       'tlCast': '角色',
@@ -2252,6 +2260,14 @@ function revealCanvasInRight() {
       'tlPush': 'Push to canvas',
       'tlGenAll': 'Generate all',
       'tlRetryFailed': 'Regenerate failed',
+      'tlLock': 'Lock',
+      'tlLocked': 'Locked',
+      'tlNeedRedo': 'Needs redo',
+      'tlLockFirst': 'Lock the characters and scenes first',
+      'tlRefStage': 'Characters / scenes',
+      'tlShotStage': 'Storyboard frames',
+      'tlVideoStage': 'Video',
+      'tlRelock': 'Regenerate this locked sheet. Downstream frames and videos will be marked for redo',
       'tlZoom': 'Zoom',
       'tlStory': 'Story',
       'tlCast': 'Cast',
@@ -10144,10 +10160,17 @@ function queueThumb(assetId) {
         update((s) => { s.assistantChat = chat; s.assistantBusy = false; s.assistantLive = null; });
         saveAssistantChat(S.activeId, activeCanvasId(), chat);
         flushSave();
-        if (r && r.clientJob === 'regen-failed' && !r.needsConfirm) {
-          const list = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && (nd.data.status === 'error' || nd.data.adapt));
+        if (r && r.clientJob && !r.needsConfirm) {
+          const audios = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.type === 'audio' && nd.data && nd.data.mvPackage);
+          const audio = (r.args && r.args.audioId && S.graph.nodes[r.args.audioId]) || audios[0];
+          const owned = Object.values(S.graph.nodes || {}).filter((nd) => audio && nd && nd.data && nd.data.mvFrom === audio.id);
+          let list = [];
+          if (r.clientJob === 'gen-refs') list = owned.filter((nd) => (nd.data.mvRole === 'char' || nd.data.mvRole === 'loc') && !nd.data.assetId);
+          else if (r.clientJob === 'gen-shots') list = owned.filter((nd) => nd.data.mvRole === 'shot' && !nd.data.assetId);
+          else if (r.clientJob === 'gen-videos') list = owned.filter((nd) => nd.data.mvRole === 'video' && !nd.data.assetId && !nd.data.skipGen);
+          else if (r.clientJob === 'regen-failed') list = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && (nd.data.status === 'error' || nd.data.adapt));
           for (const nd of list) {
-            try { await runGenNode(nd); } catch { /* 失败项各自留下原因 */ }
+            try { await runGenNode(nd); } catch { /* 一项失败不挡住后面的节点 */ }
           }
         }
       } catch (e) {
@@ -11399,16 +11422,78 @@ function queueThumb(assetId) {
       }
     }
 
+    function mvStates(audioId) {
+      return Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && nd.data.mvFrom === audioId).map((nd) => ({
+        role: nd.data.mvRole || '',
+        name: nd.data.refName || '',
+        assetId: nd.data.assetId || '',
+        locked: !!nd.data.refLock,
+        sceneIndex: nd.data.mvIndex,
+        shotIndex: nd.data.shotIndex,
+        id: nd.id,
+      }));
+    }
+    function missingRefsForShot(shot, states) {
+      const missing = [];
+      for (const name of ((shot && shot.characters) || [])) {
+        const row = (states || []).find((s) => s.role === 'char' && s.name === name);
+        if (!row || !row.assetId) missing.push({ role: 'char', name, why: 'missing' });
+        else if (!row.locked) missing.push({ role: 'char', name, why: 'unlocked' });
+      }
+      if (shot && shot.scene) {
+        const row = (states || []).find((s) => s.role === 'loc' && s.name === shot.scene);
+        if (!row || !row.assetId) missing.push({ role: 'loc', name: shot.scene, why: 'missing' });
+        else if (!row.locked) missing.push({ role: 'loc', name: shot.scene, why: 'unlocked' });
+      }
+      return missing;
+    }
+    function markDownstreamStale(nodeId) {
+      const ids = [];
+      const seen = new Set();
+      const walk = (from) => {
+        for (const e of S.graph.edges || []) {
+          if (!e || e.fromNode !== from || seen.has(e.toNode)) continue;
+          seen.add(e.toNode);
+          ids.push(e.toNode);
+          walk(e.toNode);
+        }
+      };
+      walk(nodeId);
+      update((s) => {
+        for (const id of ids) {
+          const nd = s.graph.nodes[id];
+          if (!nd || !nd.data) continue;
+          if (nd.data.mvRole === 'shot' || nd.data.mvRole === 'video') {
+            nd.data.needRegen = true;
+            if (nd.type === 'video') nd.data.mvStale = true;
+          }
+        }
+      });
+    }
     function mvRefBlock(n) {
-      if (!n || n.type !== 'video' || !n.data || !n.data.mvFrom) return '';
+      if (!n || !n.data || !n.data.mvFrom) return '';
       const audio = S.graph.nodes[n.data.mvFrom];
-      const sc = audio && audio.data && audio.data.mvPackage && audio.data.mvPackage.scenes && audio.data.mvPackage.scenes[n.data.mvIndex];
+      const pkg = audio && audio.data && audio.data.mvPackage;
+      const states = mvStates(n.data.mvFrom);
+      if (n.data.mvRole === 'shot') {
+        const sc = pkg && pkg.scenes && pkg.scenes[n.data.mvIndex];
+        const shot = sc && sc.shots && sc.shots[n.data.shotIndex != null ? n.data.shotIndex : 0];
+        const missing = missingRefsForShot(shot || { characters: (sc && sc.refs && sc.refs.characters) || [], scene: (sc && sc.refs && sc.refs.locations && sc.refs.locations[0]) || '' }, states);
+        const absent = missing.find((m) => m.why === 'missing');
+        const open = missing.find((m) => m.why === 'unlocked');
+        if (absent) return (absent.role === 'char' ? '角色' : '场景') + '「' + absent.name + '」还没有设定图，先生成并定稿';
+        if (open) return (open.role === 'char' ? '角色' : '场景') + '「' + open.name + '」还没定稿，定稿后才能出分镜';
+      }
+      if (n.type !== 'video') return '';
+      const sc = pkg && pkg.scenes && pkg.scenes[n.data.mvIndex];
       if (!sc) return '';
       if (sc.awaitingConfirm) return '这一镜的提示词还等确认，确认前不生成';
-      const names = (sc.refs && sc.refs.locations) || [];
-      for (const name of names) {
-        const img = Object.values(S.graph.nodes).find((nd) => nd && nd.type === 'image' && nd.data && nd.data.mvFrom === n.data.mvFrom && nd.data.label === name);
-        if (img && !img.data.assetId) return '场景「' + name + '」还没有主图，先生成场景图再生成这一镜';
+      const shotNodes = states.filter((s) => s.role === 'shot' && s.sceneIndex === n.data.mvIndex);
+      if (shotNodes.length && shotNodes.some((s) => !s.assetId)) return '先生成这一段的分镜图，再生成视频';
+      for (const shot of sc.shots || []) {
+        const missing = missingRefsForShot(shot, states);
+        if (missing.find((m) => m.why === 'missing')) return '先生成并定稿这一镜用到的角色和场景';
+        if (missing.find((m) => m.why === 'unlocked')) return '请先定稿这一镜用到的角色和场景';
       }
       return '';
     }
@@ -14036,7 +14121,7 @@ function queueThumb(assetId) {
       const refThumbUrl = useNodeThumb(firstRefAid);
       const running = n.data.status === 'running';
       const done = !!n.data.assetId;
-      const statusLabel = running ? T('genRunning') : done ? T('generated') : (n.data.status === 'error' ? T('genFailed') : '');
+      const statusLabel = n.data.needRegen ? T('tlNeedRedo') : running ? T('genRunning') : done ? T('generated') : (n.data.status === 'error' ? T('genFailed') : '');
       // 打开面板必须同时选中节点：面板渲染条件是 composerId ∈ S.sel。
       // 视频控件会 stopPropagation（不经过节点根 pointerdown），所以这里自己保证选中。
       const openPanel = () => selectAndOpenComposer(n.id);
@@ -14290,11 +14375,29 @@ function queueThumb(assetId) {
               if (u) downloadBlobFromUrl(u, await downloadNameForAsset(n.data.assetId, (kind === 'image' ? 'image' : 'video') + '-' + n.id.slice(-5), kind));
             },
               }, Ic('download', 11), T('download')),
+              (n.data.mvRole === 'char' || n.data.mvRole === 'loc') ? h('button', {
+                type: 'button', className: 'dshic-mini is-ghost',
+                onPointerDown: (e) => e.stopPropagation(),
+                onClick: () => update((s) => { const nd = s.graph.nodes[n.id]; if (nd && nd.data.assetId) nd.data.refLock = !nd.data.refLock; }),
+              }, n.data.refLock ? T('tlLocked') : T('tlLock')) : null,
               h('button', {
                 type: 'button', className: 'dshic-mini is-ghost', disabled: running,
                 onPointerDown: (e) => e.stopPropagation(),
-                onClick: () => { runGenNode(n); },
+                onClick: () => {
+                  if ((n.data.mvRole === 'char' || n.data.mvRole === 'loc') && n.data.refLock && !n.data.relockOk) {
+                    update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.relockAsk = true; });
+                    return;
+                  }
+                  if (n.data.refLock) {
+                    markDownstreamStale(n.id);
+                    update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.refLock = false; nd.data.relockOk = false; nd.data.relockAsk = false; } });
+                  }
+                  runGenNode(n);
+                },
               }, Ic('spark', 11), T('regen')),
+              n.data.relockAsk ? h('div', { className: 'dshic-adapt' },
+                h('div', null, T('tlRelock')),
+                h('button', { type: 'button', className: 'dshic-mini', onPointerDown: (e) => e.stopPropagation(), onClick: () => { update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.relockOk = true; }); markDownstreamStale(n.id); update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.refLock = false; nd.data.relockAsk = false; } }); runGenNode(n); } }, T('tlAgentConfirm'))) : null,
               h('div', { className: 'dshic-flex' }),
               h('button', {
                 type: 'button', className: 'dshic-mini is-ghost', title: T('refBadgeTitle'),
@@ -15641,11 +15744,36 @@ function queueThumb(assetId) {
           try { await runGenNode(nd); } catch { /* 失败的段不挡住后面的段 */ }
         }
       };
+      const refStage = () => {
+        const states = mvStates(n.id);
+        const tally = (role) => {
+          const rows = states.filter((s) => s.role === role);
+          return { total: rows.length, have: rows.filter((s) => s.assetId).length, locked: rows.filter((s) => s.assetId && s.locked).length };
+        };
+        return { characters: tally('char'), locations: tally('loc'), shots: tally('shot'), videos: tally('video') };
+      };
+      const genRefsOnly = async () => {
+        const list = owned().filter((nd) => (nd.data.mvRole === 'char' || nd.data.mvRole === 'loc') && !nd.data.assetId);
+        for (const nd of list) {
+          try { await runGenNode(nd); } catch { /* 一张设定失败不挡住下一张 */ }
+        }
+        update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = null; });
+      };
       const genAll = async () => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
+        const stage = refStage();
+        const missing = (stage.characters.total - stage.characters.have) + (stage.locations.total - stage.locations.have);
+        if (missing > 0) {
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = { count: missing, chars: stage.characters.total - stage.characters.have, locs: stage.locations.total - stage.locations.have }; });
+          return;
+        }
+        if (stage.characters.locked < stage.characters.total || stage.locations.locked < stage.locations.total) {
+          toast(T('tlLockFirst'));
+          return;
+        }
         setBusy('gen');
         try {
-          await runOwned((nd) => nd.type === 'image' && !String(nd.data.mvKey || '').includes(':src:'));
+          await runOwned((nd) => nd.data.mvRole === 'shot' && !nd.data.assetId);
           const videos = owned().filter((nd) => nd.type === 'video' && !nd.data.skipGen).sort((a, b) => (a.data.mvIndex || 0) - (b.data.mvIndex || 0));
           for (const nd of videos) {
             try { await runGenNode(nd); } catch { /* 失败的段不挡住后面的段 */ }
@@ -15675,6 +15803,20 @@ function queueThumb(assetId) {
       };
       const genSceneAt = async (index) => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
+        const stage = refStage();
+        const missing = (stage.characters.total - stage.characters.have) + (stage.locations.total - stage.locations.have);
+        if (missing > 0) {
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = { count: missing, chars: stage.characters.total - stage.characters.have, locs: stage.locations.total - stage.locations.have }; });
+          return;
+        }
+        if (stage.characters.locked < stage.characters.total || stage.locations.locked < stage.locations.total) {
+          toast(T('tlLockFirst'));
+          return;
+        }
+        const shotNodes = owned().filter((nd) => nd.data.mvRole === 'shot' && nd.data.mvIndex === index && !nd.data.assetId);
+        for (const nd of shotNodes) {
+          try { await runGenNode(nd); } catch { /* 分镜失败不挡视频检查 */ }
+        }
         const imgs = owned().filter((nd) => nd.type === 'image' && nd.data && nd.data.mvIndex === index && !String(nd.data.mvKey || '').includes(':src:'));
         for (const img of imgs) if (!img.data.assetId) {
           try { await runGenNode(img); } catch { /* 这一张失败不挡住这一段视频 */ }
@@ -15857,6 +15999,19 @@ function queueThumb(assetId) {
             update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.metaDurationSec = d; });
           },
         }) : null,
+        pkg ? h('div', { className: 'dshic-mtl-steps', 'data-tl-ref-steps': '1' }, (() => {
+          const stage = refStage();
+          const steps = [
+            [T('tlRefStage'), stage.characters.locked + '/' + stage.characters.total + ' · ' + stage.locations.locked + '/' + stage.locations.total],
+            [T('tlShotStage'), stage.shots.have + '/' + stage.shots.total],
+            [T('tlVideoStage'), stage.videos.have + '/' + stage.videos.total],
+          ];
+          const current = stage.characters.locked < stage.characters.total || stage.locations.locked < stage.locations.total ? 0 : stage.shots.have < stage.shots.total ? 1 : 2;
+          return steps.map((pair, i) => h('span', { key: pair[0], className: 'dshic-mtl-step' + (i === current ? ' is-on' : '') + (i < current ? ' is-done' : '') }, pair[0] + ' ' + pair[1]));
+        })()) : null,
+        n.data.refConfirm ? h('div', { className: 'dshic-adapt' },
+          h('div', null, '将先生成角色 ' + (n.data.refConfirm.chars || 0) + ' 张、场景 ' + (n.data.refConfirm.locs || 0) + ' 张'),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: genRefsOnly }, T('tlAgentConfirm'))) : null,
         mode === 'create' ? h('div', { className: 'dshic-mtl-steps', 'data-tl-steps': '1' },
           [T('tlStepUpload'), T('tlStepAnalyze'), T('tlStepConfirm'), T('tlStepStyle'), T('tlStepPush')].map((label, i) => {
             const flowIndex = !url ? 0 : !(an && an.sections) ? 1 : !n.data.sectionsConfirmed ? 2 : !pkg ? 3 : 4;
