@@ -55,6 +55,134 @@ export function snapGenerationDuration(sec, allowed) {
   return { requestSec: best, slotSec: slot, split: false, warn };
 }
 
+/** 同一项自动改参数再试的上限。未知原因只允许原样再试一次。 */
+export const ADAPT_RETRY_CAP = 2;
+
+const ADAPT_SAY = {
+  moderation: '内容审核未通过，已改写提示词并保留原意。',
+  long: '提示词过长，已缩短。',
+  duration: '时长不在模型允许范围内，已改到最近的允许值。',
+  resolution: '分辨率或比例不受支持，已改到允许值。',
+  ref: '参考文件过大或格式不对，已压缩后再试。',
+  transient: '服务暂时没有响应，将用原参数稍后重试。',
+  balance: '模型余额不足，已停止重试。请充值或更换模型。',
+  auth: '密钥无效，已停止重试。请到设置里检查。',
+  empty: '模型没有返回可用结果，已要求它严格按格式再答一次。',
+  unknown: '没能判断失败原因。',
+};
+
+export function classifyGenFailure(message, status) {
+  const raw = String(message || '');
+  const code = Number(status) || Number((/HTTP\s+(\d+)/.exec(raw) || [])[1]) || 0;
+  if (/insufficient balance|余额不足|arrearage|overdue-payment|quota exceeded|欠费/i.test(raw)) return 'balance';
+  if (code === 401 || /invalid api[- ]?key|unauthorized|invalid_api_key|密钥无效/i.test(raw)) return 'auth';
+  if (/moderat|safety|content policy|data_inspection|datainspection|nsfw|违规|敏感|审核|不合规|色情/i.test(raw)) return 'moderation';
+  if (/prompt.{0,12}too long|max(?:imum)? context|context length|token limit|提示词过长|超出长度|too many characters/i.test(raw)) return 'long';
+  if (/duration|时长/.test(raw) && /unsupported|invalid|not support|不支持|不允许|超出/i.test(raw)) return 'duration';
+  if (/resolution|aspect|ratio|分辨率|比例/.test(raw) && /unsupported|invalid|not support|不支持|不允许/i.test(raw)) return 'resolution';
+  if (/too large|file size|payload|unsupported (image|audio|format)|格式|过大|参考图/i.test(raw)) return 'ref';
+  if (code === 429 || (code >= 500 && code <= 599) || /timeout|timed out|超时|aborted|ECONNRESET|ETIMEDOUT|rate limit|too many requests/i.test(raw)) return 'transient';
+  if (/empty|garbled|无法解析|没有返回|返回为空|invalid json|unexpected token/i.test(raw)) return 'empty';
+  return 'unknown';
+}
+
+export function sanitizePrompt(prompt) {
+  let s = String(prompt || '');
+  const swaps = [
+    [/血腥|gore|blood/gi, '紧张'],
+    [/裸体|裸露|nude|naked/gi, '服装完整'],
+    [/色情|sexual|nsfw/gi, ''],
+    [/杀死|杀人|murder|\bkill\b/gi, '对峙'],
+    [/枪支|手枪|步枪|\bgun\b|\brifle\b/gi, '道具'],
+    [/毒品|drug/gi, ''],
+  ];
+  for (const [re, to] of swaps) s = s.replace(re, to);
+  return s.replace(/\s{2,}/g, ' ').trim();
+}
+
+export function shortenPrompt(prompt, limit) {
+  const s = String(prompt || '').trim();
+  const max = Math.max(80, Number(limit) || 600);
+  if (s.length <= max) return s;
+  const head = Math.floor(max * 0.65);
+  const tail = max - head - 1;
+  return s.slice(0, head) + '…' + s.slice(-tail);
+}
+
+function nearestAllowed(value, allowed, fallback) {
+  const list = (allowed || []).map((x) => String(x)).filter(Boolean);
+  const cur = String(value || '');
+  if (!list.length) return cur || fallback;
+  if (list.includes(cur)) return cur;
+  return list[0] || fallback;
+}
+
+/**
+ * 根据这一次失败决定下一次怎么改。history 里 auto:true 的次数达到上限就停。
+ * rewrittenPrompt 是模型改写的结果；没有就用规则。
+ */
+export function adaptGenAttempt(input) {
+  const src = input || {};
+  const params = Object.assign({}, src.params || {});
+  const history = Array.isArray(src.history) ? src.history : [];
+  const kind = classifyGenFailure(src.message, src.status);
+  const next = Object.assign({}, params);
+  let change = '';
+  if (kind === 'moderation') {
+    const rewritten = String(src.rewrittenPrompt || '').trim();
+    next.prompt = rewritten || sanitizePrompt(params.prompt);
+    change = '已改写提示词以通过审核';
+  } else if (kind === 'long') {
+    const before = String(params.prompt || '').length;
+    next.prompt = shortenPrompt(params.prompt, src.maxPrompt);
+    change = '提示词 ' + before + '→' + String(next.prompt || '').length + ' 字';
+  } else if (kind === 'duration') {
+    const snap = snapGenerationDuration(params.duration, params.allowedDurations);
+    next.duration = snap.requestSec;
+    change = '时长 ' + (params.duration || '?') + 's→' + snap.requestSec + 's';
+  } else if (kind === 'resolution') {
+    const ratio = nearestAllowed(params.ratio, params.allowedRatios || ['16:9', '9:16', '1:1'], '16:9');
+    const resolution = nearestAllowed(params.resolution, params.allowedResolutions || ['480P', '720P', '1080P'], '720P');
+    next.ratio = ratio;
+    next.resolution = resolution;
+    const bits = [];
+    if (String(params.resolution || '') !== resolution) bits.push('分辨率 ' + (params.resolution || '?') + '→' + resolution);
+    if (String(params.ratio || '') !== ratio) bits.push('比例 ' + (params.ratio || '?') + '→' + ratio);
+    change = bits.join('，') || '已对齐到允许的分辨率';
+  } else if (kind === 'ref') {
+    next.compressRefs = true;
+    change = '参考已压缩';
+  } else if (kind === 'empty') {
+    const extra = '只返回可用结果，不要解释，不要空内容。';
+    next.prompt = String(params.prompt || '').includes(extra) ? params.prompt : (String(params.prompt || '') + '\n' + extra);
+    next.instruction = extra;
+    change = '已加上更严的输出要求';
+  } else if (kind === 'transient') {
+    change = '原参数稍后重试';
+  } else if (kind === 'unknown') {
+    change = '原参数再试一次';
+  }
+  const autoCount = history.filter((h) => h && h.auto).length;
+  const unknownCount = history.filter((h) => h && h.kind === 'unknown').length;
+  let auto = false;
+  let say = ADAPT_SAY[kind] || ADAPT_SAY.unknown;
+  if (kind === 'balance' || kind === 'auth') auto = false;
+  else if (kind === 'unknown') auto = unknownCount < 1;
+  else auto = autoCount < ADAPT_RETRY_CAP;
+  if (!auto && kind === 'unknown') say = '没能判断失败原因，已停止自动重试。';
+  if (!auto && autoCount >= ADAPT_RETRY_CAP && kind !== 'balance' && kind !== 'auth' && kind !== 'unknown') {
+    say = say.replace(/。$/, '') + '。已自动改过 ' + ADAPT_RETRY_CAP + ' 次，停下来等你确认。';
+  }
+  const backoffMs = kind === 'transient' ? ([2000, 6000][Math.min(autoCount, 1)] || 6000) : 0;
+  return { kind, say, change, params: next, auto, backoffMs };
+}
+
+export function pushAttempt(history, entry) {
+  const list = Array.isArray(history) ? history.slice() : [];
+  list.push(entry || {});
+  return list.slice(-20);
+}
+
 /** 上传后的时长：解码结果优先，其次 metadata，其次节点上已存的值。都没有就是 0，不能假装有时长。 */
 export function readAudioDuration(src) {
   const o = src || {};
@@ -467,6 +595,7 @@ export function canvasDigest(graph, selection) {
       count: d.count || null,
       model: d.imageModel || d.videoModel || d.model || '',
       prompt: String(d.prompt || d.idea || d.text || d.script || '').slice(0, 100),
+      failure: d.adapt && d.adapt.kind ? { kind: d.adapt.kind, say: String(d.adapt.say || '').slice(0, 160), change: String(d.adapt.change || '').slice(0, 80) } : null,
       selected: sel.has(n.id),
     };
   });
@@ -520,6 +649,7 @@ export function canvasAssistantSystem() {
     '用户说「这个」或 this 时，指的是摘要里 selected 为 true 的节点。',
     '新建、改字、连线、分析歌曲、铺时间轴、推到画布可以直接做。',
     '生成图片、生成视频、成片合成、删除节点必须先停下来等用户确认，不要连续调用。',
+    '节点失败时先看 failure：说明原因，并按其中的改动再生成。余额不足或密钥无效不要重试。',
     '一次只调用一个工具。没有工具要调用时，用一句中文回答。',
   ].join('\n');
 }
@@ -564,6 +694,13 @@ export function canvasPreviewLine(preview) {
 }
 
 export function gateCanvasAction(action, opts) {
+  if (action && action.clientJob === 'regen-failed') {
+    if (action.spends && !(opts && opts.confirmed)) {
+      const count = (action.args && action.args.count) || 1;
+      return { allow: false, say: '将按失败原因重生成 ' + count + ' 项。', preview: { kind: 'run', count, model: (opts && opts.modelLabel) || '' } };
+    }
+    return { allow: true, say: action.say || '' };
+  }
   if (!action || !action.tool) return { allow: true, say: (action && action.say) || '' };
   const digest = opts && opts.digest;
   const cost = canvasActionCost(action.tool, action.args, digest);
@@ -648,6 +785,24 @@ function audioNode(digest, scopeId) {
 export function keywordCanvasAction(message, digest, scopeId) {
   const text = String(message || '');
   const target = selectedOrScope(digest, scopeId);
+  if (/为什么失败|失败原因/.test(text)) {
+    const f = target && target.failure;
+    if (!f) return { tool: '', say: '当前没有失败记录。' };
+    return { tool: '', say: [f.say, f.change].filter(Boolean).join(' ') };
+  }
+  const failed = ((digest && digest.nodes) || []).filter((n) => n && (n.status === 'error' || n.failure));
+  if (/重生成失败|失败项/.test(text) || (/继续自动/.test(text) && failed.length)) {
+    if (!failed.length) return { tool: '', say: '没有失败项。' };
+    const costly = failed.filter((n) => n.type === 'image' || n.type === 'video' || n.type === 'finalcut');
+    const first = failed[0].failure;
+    return {
+      tool: '',
+      clientJob: 'regen-failed',
+      spends: costly.length > 0,
+      args: { count: failed.length },
+      say: '按上次的失败原因重跑 ' + failed.length + ' 项。' + (first && first.change ? (' ' + first.change) : ''),
+    };
+  }
   if (/删除|删掉|delete/i.test(text)) {
     if (!target) return { tool: '', say: '先选中要删除的节点。' };
     return { tool: 'canvas_delete_node', args: { nodeId: target.id }, say: '准备删除这个节点。' };
@@ -2075,6 +2230,7 @@ export async function understandFromRequest(req, fetchImpl) {
       audioUrl: /^https?:\/\//i.test(audioBase64) ? audioBase64 : '',
       format: r.format || 'wav',
       extra: parseExtra(provider.extra),
+      prompt: r.instruction || undefined,
     });
     const content = await callOmniWithRetry({
       baseUrl, apiKey, body, fetchImpl,

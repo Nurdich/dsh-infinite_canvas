@@ -1170,6 +1170,7 @@ function revealCanvasInRight() {
       'tlGenerate': '生成时间轴',
       'tlPush': '推到画布',
       'tlGenAll': '生成全部',
+      'tlRetryFailed': '重生成失败项',
       'tlZoom': '缩放',
       'tlStory': '剧情',
       'tlCast': '角色',
@@ -2250,6 +2251,7 @@ function revealCanvasInRight() {
       'tlGenerate': 'Build timeline',
       'tlPush': 'Push to canvas',
       'tlGenAll': 'Generate all',
+      'tlRetryFailed': 'Regenerate failed',
       'tlZoom': 'Zoom',
       'tlStory': 'Story',
       'tlCast': 'Cast',
@@ -3691,6 +3693,8 @@ body[data-ds-dark-theme] .dshic-storage-details{border-color:var(--dsw-alias-bor
   background:var(--dshic-preview-bg);color:var(--dshic-ink3);}
 .dshic-media-empty-t{font-size:var(--dshic-empty-text);line-height:16px;text-align:center;padding:0 10px;}
 .dshic-media-err{position:absolute;left:0;right:0;bottom:0;padding:4px 8px;font-size:10.5px;line-height:14px;color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1);max-height:42px;overflow:hidden;text-overflow:ellipsis;}
+.dshic-adapt{margin:6px 8px 8px;padding:8px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dshic-line2);border-radius:8px;display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:1.4;}
+.dshic-adapt textarea{width:100%;min-height:48px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-fg-primary);border:1px solid var(--dshic-line2);border-radius:6px;padding:6px;font:inherit;}
 /* 左上状态胶囊（原型 .status）：实底 / 圆点 6px；已生成绿、生成中蓝并 pulse */
 .dshic-status-badge{position:absolute;left:8px;top:8px;z-index:3;display:inline-flex;align-items:center;gap:5px;
   background:var(--dshic-badge-bg);border:1px solid var(--dshic-line2);border-radius:var(--dshic-badge-r);
@@ -10140,6 +10144,12 @@ function queueThumb(assetId) {
         update((s) => { s.assistantChat = chat; s.assistantBusy = false; s.assistantLive = null; });
         saveAssistantChat(S.activeId, activeCanvasId(), chat);
         flushSave();
+        if (r && r.clientJob === 'regen-failed' && !r.needsConfirm) {
+          const list = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && (nd.data.status === 'error' || nd.data.adapt));
+          for (const nd of list) {
+            try { await runGenNode(nd); } catch { /* 失败项各自留下原因 */ }
+          }
+        }
       } catch (e) {
         const live = S.assistantLive || {};
         const partial = (e && e.partial) || { text: live.text || '', reasoning: live.reasoning || '' };
@@ -11162,6 +11172,7 @@ function queueThumb(assetId) {
               const piece = await postAudioUnderstand({
                 provider: { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '', analysisIdleSec: cfg.analysisIdleSec || '' },
                 audioBase64, format: 'wav', durationSec: view.duration, idleMs, progressId,
+                instruction: (n.data.adapt && n.data.adapt.instruction) || '',
                 windowIndex: i, windowCount: windows.length, energy: [], hopSec: 0.25, truncated: false,
               });
               parts.push({ offsetSec: w.offsetSec || w.startSec || 0, analysis: piece });
@@ -11194,6 +11205,7 @@ function queueThumb(assetId) {
                 if (partial && partial.reasoning) nd.data.analyzeReasoning = partial.reasoning;
                 nd.data.error = String((e && e.message) || e);
               });
+              await rememberFailure(n.id, e, { prompt: '', duration: view.duration, model: cfg.model, provider: cfg.baseUrl }, 0);
               throw e;
             } finally { stopPoll(); }
           }
@@ -11213,6 +11225,7 @@ function queueThumb(assetId) {
           nd.data.analyzeReasoning = '';
           nd.data.analyzeRetry = false;
           nd.data.analyzeResume = 0;
+          nd.data.adapt = null;
           nd.data.analyzeLocal = analysis.method !== 'model';
           nd.data.analyzeModel = cfg.model;
           nd.data.sectionsConfirmed = false;
@@ -11399,8 +11412,112 @@ function queueThumb(assetId) {
       }
       return '';
     }
-    async function runGenNode(n) {
+    function sleepMs(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+    async function shrinkBlob(blob, maxEdge) {
+      if (!blob || typeof createImageBitmap !== 'function') return blob;
+      try {
+        const bmp = await createImageBitmap(blob);
+        const edge = Math.max(bmp.width, bmp.height) || 1;
+        const limit = maxEdge || 768;
+        if (edge <= limit && blob.size < 3500000) { bmp.close && bmp.close(); return blob; }
+        const scale = Math.min(1, limit / edge);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bmp.width * scale));
+        canvas.height = Math.max(1, Math.round(bmp.height * scale));
+        const g = canvas.getContext('2d');
+        if (!g) return blob;
+        g.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        if (bmp.close) bmp.close();
+        const next = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.82));
+        return next || blob;
+      } catch { return blob; }
+    }
+    function genParamsOf(n) {
+      const d = (n && n.data) || {};
+      return {
+        prompt: String(d.prompt || d.idea || d.styleText || ''),
+        duration: Number(d.duration || d.durationSec) || undefined,
+        resolution: d.resolution || '',
+        ratio: d.ratio || '',
+        size: d.size || '',
+        provider: d.providerName || '',
+        model: d.imageModel || d.videoModel || d.audioModel || d.model || '',
+        refs: Array.isArray(d.refs) ? d.refs.length : 0,
+      };
+    }
+    async function rememberFailure(nodeId, err, params, roundAuto) {
+      const live = S.graph.nodes[nodeId];
+      const history = (live && live.data && live.data.attempts) || [];
+      let plan = null;
+      try {
+        const r = await hostRpc('generationPlan', {
+          message: String((err && err.message) || err || ''),
+          status: err && err.status,
+          params: params || {},
+          history,
+        });
+        plan = r && r.plan;
+      } catch { plan = null; }
+      if (!plan) plan = { kind: 'unknown', say: String((err && err.message) || err || ''), change: '', params: params || {}, auto: false, backoffMs: 0 };
+      const entry = {
+        at: Date.now(),
+        provider: (params && params.provider) || '',
+        model: (params && params.model) || '',
+        code: (err && err.status) || '',
+        message: String((err && err.message) || err || '').slice(0, 500),
+        params: {
+          prompt: String((params && params.prompt) || '').slice(0, 2000),
+          duration: params && params.duration,
+          resolution: params && params.resolution,
+          ratio: params && params.ratio,
+          refs: params && params.refs,
+        },
+        kind: plan.kind,
+        change: plan.change || '',
+        auto: !!(plan.auto && roundAuto < 2),
+      };
+      const go = !!(plan.auto && roundAuto < 2 && plan.kind !== 'balance' && plan.kind !== 'auth');
+      update((s) => {
+        const nd = s.graph.nodes[nodeId];
+        if (!nd) return;
+        const prev = Array.isArray(nd.data.attempts) ? nd.data.attempts : [];
+        nd.data.attempts = prev.concat([entry]).slice(-20);
+        nd.data.adapt = {
+          kind: plan.kind,
+          say: plan.say,
+          change: plan.change || '',
+          prompt: (plan.params && plan.params.prompt) || (params && params.prompt) || '',
+          duration: plan.params && plan.params.duration,
+          resolution: plan.params && plan.params.resolution,
+          ratio: plan.params && plan.params.ratio,
+          size: plan.params && plan.params.size,
+          instruction: (plan.params && plan.params.instruction) || '',
+          compressRefs: !!(plan.params && plan.params.compressRefs),
+          detail: entry.message,
+        };
+        nd.data.error = plan.say || entry.message;
+        nd.data.status = go ? nd.data.status : 'error';
+      });
+      return { plan, go, backoffMs: plan.backoffMs || 0 };
+    }
+    function applyAdapt(n) {
+      const a = n && n.data && n.data.adapt;
+      if (!a) return;
+      if (typeof a.prompt === 'string' && a.prompt.trim()) n.data.prompt = a.prompt;
+      if (a.duration) n.data.duration = a.duration;
+      if (a.resolution) n.data.resolution = a.resolution;
+      if (a.ratio) n.data.ratio = a.ratio;
+      if (a.size) n.data.size = a.size;
+      if (a.compressRefs) n.data.adaptCompress = true;
+    }
+    async function runGenNode(n, ctx) {
       const type = n.type;
+      const roundAuto = (ctx && ctx.auto) || 0;
+      if (!roundAuto) applyAdapt(n);
+      if (n.data && n.data.adapt && (n.data.adapt.kind === 'balance' || n.data.adapt.kind === 'auth') && !roundAuto) {
+        update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.status = 'error'; nd.data.error = n.data.adapt.say || nd.data.error; } });
+        return false;
+      }
       const blocked = mvRefBlock(n);
       if (blocked) throw new Error(blocked);
       const settings = loadSettings(); // 模型解析（供应商+模型）用
@@ -11463,6 +11580,11 @@ function queueThumb(assetId) {
           const cases = [];
           for (let i = 0; i < want; i++) {
             if (want > 1) update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.progress = (i + 1) + '/' + want; });
+            if (n.data && n.data.adaptCompress) {
+              for (const meta of metas) {
+                if (meta && meta.blob) meta.blob = await shrinkBlob(meta.blob, 768);
+              }
+            }
             const blob = await apiImage(p, metas, mcfg, {
               size: n.data.size, ratio: n.data.ratio, nodeExtra: n.data.imgExtra, imageSuffix: n.data.imageSuffix, warn: addWarn,
               // 任务式厂商（三宝图片）：任务 id 就是凭证——代理超时/页面关闭后仍可凭 id 回查（与视频同口径）
@@ -11747,6 +11869,23 @@ function queueThumb(assetId) {
             nd.data.error = String((err && err.message) || err);
           }
         });
+        if (!stopped) {
+          const decided = await rememberFailure(n.id, err, genParamsOf(n), roundAuto);
+          if (decided.go) {
+            const live = S.graph.nodes[n.id];
+            if (live && decided.plan && decided.plan.params) {
+              const p = decided.plan.params;
+              if (p.prompt) live.data.prompt = p.prompt;
+              if (p.duration) live.data.duration = p.duration;
+              if (p.resolution) live.data.resolution = p.resolution;
+              if (p.ratio) live.data.ratio = p.ratio;
+              if (p.compressRefs) live.data.adaptCompress = true;
+              if (live.data.adapt) live.data.adapt.prompt = p.prompt || live.data.adapt.prompt;
+            }
+            if (decided.backoffMs) await sleepMs(decided.backoffMs);
+            return runGenNode(live || n, { auto: roundAuto + 1 });
+          }
+        }
         flushSave(); // 让对话侧的 canvas_node_status 也能读到失败原因
         if (stopped) toast(T('stoppedToast'));
         return false;
@@ -11762,6 +11901,7 @@ function queueThumb(assetId) {
         const nd = s.graph.nodes[nodeId];
         if (nd) {
           nd.data.status = 'done'; nd.data.assetId = assetId; nd.data.demo = !!demo;
+          nd.data.adapt = null; nd.data.error = null; nd.data.adaptCompress = false;
           // 媒体历史：保留最近 8 次结果，可在节点内切换
           const h = [{ assetId, ts: Date.now() }].concat(nd.data.history || []);
           nd.data.history = h.filter((x, i, arr) => arr.findIndex((y) => y.assetId === x.assetId) === i).slice(0, 8);
@@ -11822,7 +11962,7 @@ function queueThumb(assetId) {
           // 已在生成中的节点跳过：避免与对话触发的 canvas_run_node 并发调用同一节点（重复计费/重复资产）
           if (n.data && n.data.status === 'running') continue;
           if (n.type === 'image' || n.type === 'video' || n.type === 'script' || n.type === 'storyboard' || n.type === 'finalcut' || n.type === 'audio') {
-            await runGenNode(n);
+            try { await runGenNode(n); } catch { /* 一项失败不挡住后面的节点 */ }
           }
         }
       } finally {
@@ -14127,8 +14267,16 @@ function queueThumb(assetId) {
                 h('span', { className: 'dshic-status-dot' }),
                 statusLabel + ((running && n.data.progress) ? ' ' + n.data.progress : ''))
             : null,
-          n.data.error ? h('div', { key: 'err', className: 'dshic-media-err', title: n.data.error }, '⚠ ' + n.data.error) : null,
+          n.data.error ? h('div', { key: 'err', className: 'dshic-media-err', title: n.data.error }, '⚠ ' + (n.data.adapt && n.data.adapt.say ? n.data.adapt.say : n.data.error)) : null,
         ),
+        n.data.adapt ? h('div', { key: 'adapt', className: 'dshic-adapt', 'data-no-drag': '1', onPointerDown: (e) => e.stopPropagation() },
+          h('div', null, n.data.adapt.say || ''),
+          n.data.adapt.change ? h('div', null, n.data.adapt.change) : null,
+          h('textarea', {
+            value: n.data.adapt.prompt || n.data.prompt || '',
+            onChange: (e) => update((s) => { const nd = s.graph.nodes[n.id]; if (nd && nd.data.adapt) nd.data.adapt.prompt = e.target.value; }),
+          }),
+          n.data.adapt.detail ? h('details', { className: 'dshic-mtl-agent-detail' }, h('summary', null, T('tlErrDetail')), h('pre', null, n.data.adapt.detail)) : null) : null,
         // 操作栏（第三段）：下载 / 重新生成 / 参考图 N（末尾左下角，作用于已生成结果）。
         // 高度固定 NODE_FOOT_H（CSS flex:none + height），不参与画面比例、不被正文拉伸；
         // 空态（done=false）不渲染这一栏，节点高度里也不加 NODE_FOOT_H。
@@ -15319,6 +15467,7 @@ function queueThumb(assetId) {
               ...(live && live.data && live.data.storyEdited && live.data.mvPackage && live.data.mvPackage.story ? { story: live.data.mvPackage.story } : {}),
               ...(allowedDurations ? { allowedDurations } : {}),
               progressId,
+              retryNote: (live && live.data && live.data.adapt && live.data.adapt.change) || '',
             }, analysisOuterMaxMs());
           } finally { stopPoll(); }
           if (r && r.package) {
@@ -15327,7 +15476,10 @@ function queueThumb(assetId) {
             await cutSlices(r.package.scenes || [], 'scene');
           }
         } catch (e) {
-          toast(String((e && e.message) || e));
+          await rememberFailure(n.id, e, { prompt: (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.styleText) || '', model: '' }, 0);
+          const noted = S.graph.nodes[n.id];
+          if (noted && noted.data && noted.data.adapt && noted.data.adapt.prompt) noted.data.styleText = noted.data.adapt.prompt;
+          toast(String((noted && noted.data && noted.data.adapt && noted.data.adapt.say) || (e && e.message) || e));
         } finally { setBusy(''); }
       };
       const startAnalyze = async (resume) => {
@@ -15350,6 +15502,7 @@ function queueThumb(assetId) {
             nd.data.analyzePartial = '';
             nd.data.analyzeReasoning = '';
             nd.data.error = null;
+            nd.data.adapt = null;
           });
         }
         setBusy('analyze');
@@ -15484,7 +15637,9 @@ function queueThumb(assetId) {
       const owned = () => Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && nd.data.mvFrom === n.id);
       const runOwned = async (pred) => {
         const list = owned().filter(pred);
-        for (const nd of list) await runGenNode(nd);
+        for (const nd of list) {
+          try { await runGenNode(nd); } catch { /* 失败的段不挡住后面的段 */ }
+        }
       };
       const genAll = async () => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
@@ -15492,11 +15647,25 @@ function queueThumb(assetId) {
         try {
           await runOwned((nd) => nd.type === 'image' && !String(nd.data.mvKey || '').includes(':src:'));
           const videos = owned().filter((nd) => nd.type === 'video' && !nd.data.skipGen).sort((a, b) => (a.data.mvIndex || 0) - (b.data.mvIndex || 0));
-          for (const nd of videos) await runGenNode(nd);
+          for (const nd of videos) {
+            try { await runGenNode(nd); } catch { /* 失败的段不挡住后面的段 */ }
+          }
           const cut = owned().find((nd) => nd.type === 'finalcut');
-          if (cut) await runGenNode(cut);
+          if (cut) {
+            try { await runGenNode(cut); } catch { /* 成片失败单独留下 */ }
+          }
         } catch (e) {
           toast(String((e && e.message) || e));
+        } finally { setBusy(''); }
+      };
+      const regenFailed = async () => {
+        const list = Object.values(S.graph.nodes || {}).filter((nd) => nd && nd.data && (nd.data.status === 'error' || nd.data.adapt));
+        if (!list.length) { toast(T('tlRetryFailed')); return; }
+        setBusy('gen');
+        try {
+          for (const nd of list) {
+            try { await runGenNode(nd); } catch { /* 继续下一项 */ }
+          }
         } finally { setBusy(''); }
       };
       const regenOne = async () => {
@@ -15507,9 +15676,13 @@ function queueThumb(assetId) {
       const genSceneAt = async (index) => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
         const imgs = owned().filter((nd) => nd.type === 'image' && nd.data && nd.data.mvIndex === index && !String(nd.data.mvKey || '').includes(':src:'));
-        for (const img of imgs) if (!img.data.assetId) await runGenNode(img);
+        for (const img of imgs) if (!img.data.assetId) {
+          try { await runGenNode(img); } catch { /* 这一张失败不挡住这一段视频 */ }
+        }
         const vid = owned().find((nd) => nd.type === 'video' && nd.data && nd.data.mvIndex === index && !nd.data.skipGen);
-        if (vid) await runGenNode(vid);
+        if (vid) {
+          try { await runGenNode(vid); } catch { /* 失败留在节点上 */ }
+        }
       };
       const regenStale = async () => {
         const videos = owned().filter((nd) => nd.type === 'video' && (nd.data.mvStale || (scenes[nd.data.mvIndex] && scenes[nd.data.mvIndex].gen && scenes[nd.data.mvIndex].gen.stale)));
@@ -15739,6 +15912,7 @@ function queueThumb(assetId) {
           }, busy === 'build' ? '…' : T('tlGenerate')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: pushCanvas }, T('tlPush')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: genAll }, T('tlGenAll')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: regenFailed }, T('tlRetryFailed')),
           mode === 'create' && url && !(an && an.sections) ? h('button', {
             type: 'button', className: 'dshic-mtl-go', 'data-tl-analyze': '1', disabled: !!busy, onClick: () => startAnalyze(false),
           }, busy === 'analyze' ? (n.data.analyzeProgress || T('tlAnalyzing')) : T('tlStartAnalyze')) : null,
@@ -15765,7 +15939,15 @@ function queueThumb(assetId) {
             h('summary', null, T('caThinking')),
             h('pre', null, n.data.analyzeReasoning || n.data.planReasoning)) : null,
           (n.data.analyzePartial || n.data.planPartial) ? h('pre', { className: 'dshic-mtl-stream' }, n.data.analyzePartial || n.data.planPartial) : null) : null,
-        n.data.error ? h('div', { className: 'dshic-err' }, n.data.error, n.data.analyzeRetry ? h('button', { type: 'button', className: 'dshic-mini', onClick: () => startAnalyze(true) }, T('tlRetry')) : null) : null,
+        n.data.adapt ? h('div', { className: 'dshic-adapt', onPointerDown: (e) => e.stopPropagation() },
+          h('div', null, n.data.adapt.say || n.data.error || ''),
+          n.data.adapt.change ? h('div', null, n.data.adapt.change) : null,
+          h('textarea', {
+            value: n.data.adapt.prompt || '',
+            onChange: (e) => update((s) => { const nd = s.graph.nodes[n.id]; if (nd && nd.data.adapt) nd.data.adapt.prompt = e.target.value; }),
+          }),
+          n.data.adapt.detail ? h('details', { className: 'dshic-mtl-agent-detail' }, h('summary', null, T('tlErrDetail')), h('pre', null, n.data.adapt.detail)) : null) : null,
+        n.data.error ? h('div', { className: 'dshic-err' }, n.data.adapt ? '' : n.data.error, n.data.analyzeRetry ? h('button', { type: 'button', className: 'dshic-mini', onClick: () => startAnalyze(true) }, T('tlRetry')) : null) : null,
         scene ? h('div', { className: 'dshic-mtl-inspector' },
           h('span', null, T('tlStory')),
           h('textarea', { rows: 2, value: (shot && shot.visual) || '', onBlur: (e) => patchShot({ visual: e.target.value }) }),
