@@ -2596,6 +2596,127 @@ export function characterSheetPrompt(person) {
   ].filter(Boolean).join('，'));
 }
 
+/** 角色参考图必须是可预览的三视图，外观细节写在前面，不能只剩一句套话。 */
+export function characterTurnaroundPrompt(person) {
+  const base = characterSheetPrompt(person);
+  return presentImagePrompt(base + '。角色设定图，同一张脸：正面、侧面、背面三格全身，中性背景，不要出现场景、其他人或文字。');
+}
+
+const REF_LABELS = (role, name) => [
+  name,
+  (role === 'loc' ? '场景-' : '角色-') + name + ' 设定图',
+  name + ' 设定图',
+  name + ' 三视图',
+];
+
+/** 旧画布上的图片节点可能只有名字、没有 mvRole。按名字认领，不新建第二张。 */
+export function matchRefNode(nodes, audioId, role, name) {
+  const images = Object.values(nodes || {}).filter((n) => n && n.type === 'image');
+  const exact = images.find((n) => n.data && n.data.mvFrom === audioId && n.data.mvRole === role && n.data.refName === name);
+  if (exact) return exact;
+  const labels = REF_LABELS(role, name);
+  return images.find((n) => {
+    const d = n.data || {};
+    if (d.mvFrom && d.mvFrom !== audioId) return false;
+    if (d.mvRole && d.mvRole !== role && d.mvRole !== 'loc-view') return false;
+    if (d.refName && d.refName !== name) return false;
+    return labels.includes(String(d.label || ''));
+  }) || null;
+}
+
+/**
+ * 给已有 MV 计划补角色/场景图节点。不重跑听歌，不清已有图片，不覆盖手改过的提示词。
+ */
+export function planRefRepair(pkg, nodes, audioId) {
+  const actions = [];
+  const want = [];
+  (pkg && pkg.characters || []).forEach((c, i) => {
+    if (!c || !c.name) return;
+    want.push({ role: 'char', index: i, name: c.name, prompt: characterTurnaroundPrompt(c) });
+  });
+  (pkg && pkg.locations || []).forEach((c, i) => {
+    if (!c || !c.name) return;
+    want.push({ role: 'loc', index: i, name: c.name, prompt: c.imagePrompt || c.mainPrompt || c.desc || c.name });
+  });
+  for (const item of want) {
+    const hit = matchRefNode(nodes, audioId, item.role, item.name);
+    if (hit) {
+      const prompt = String((hit.data && hit.data.prompt) || '').trim();
+      actions.push({
+        op: 'adopt',
+        nodeId: hit.id,
+        name: item.name,
+        role: item.role,
+        keepAsset: !!((hit.data && hit.data.assetId)),
+        patch: {
+          mvFrom: audioId,
+          mvRole: item.role,
+          refName: item.name,
+          ...(prompt ? {} : { prompt: item.prompt }),
+        },
+      });
+    } else {
+      actions.push({
+        op: 'create',
+        role: item.role,
+        index: item.index,
+        name: item.name,
+        prompt: item.prompt,
+        mvKey: 'mv:' + audioId + ':' + item.role + ':' + item.index,
+      });
+    }
+  }
+  return { actions };
+}
+
+/** 图片请求里参考图怎么送。generations 用 image 数组；编辑接口用 multipart。不支持就不能假装送过。 */
+export function imageRefPayload(dataUrls, mode) {
+  const urls = (dataUrls || []).filter(Boolean);
+  if (!urls.length) return { state: 'none', field: '', count: 0, ok: true };
+  if (mode === 'edits') return { state: 'sent', field: 'image[]', count: urls.length, ok: true };
+  if (mode === 'compshare' || mode === 'sanbao') return { state: 'sent', field: 'reference', count: urls.length, ok: true };
+  return { state: 'sent', field: 'image', count: urls.length, ok: true, image: urls };
+}
+
+export function strippedRefIsFailure(field, refCount) {
+  if (!refCount) return false;
+  return field === 'image' || field === 'reference_images' || field === 'image[]' || field === 'reference' || field === 'first_frame_image';
+}
+
+export function refStripError(field) {
+  return '这个模型不支持参考图字段「' + field + '」。请改用支持参考图的图片模式，或换模型。没有把去掉参考图的结果当成成功。';
+}
+
+/**
+ * 视频请求实际会送出什么图。不能同时收首帧和参考图时，首帧改作第一张参考图，并写明。
+ * 参考图会被丢掉、或一张图都没有时，state 不是 sent，调用方不能当成成功。
+ */
+export function videoConditionPlan(input) {
+  const o = input || {};
+  const refCount = Math.max(0, Number(o.refCount) || 0);
+  const hasFrame = !!o.hasFrameBlob;
+  const mode = o.frameMode || 'auto';
+  const cap = o.refCap == null ? 8 : Number(o.refCap);
+  if (!hasFrame && !refCount) {
+    return { state: 'missing', field: '', sendFrame: false, sendRefs: 0, say: '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
+  }
+  if (mode === 'hard' && hasFrame && refCount) {
+    return { state: 'unsupported', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '硬首帧会丢掉角色参考图。请改成自动，让首帧和参考图一起送。本次没有生成。' };
+  }
+  if (refCount && cap <= 0) {
+    return { state: 'unsupported', field: hasFrame ? 'first_frame' : '', sendFrame: hasFrame, sendRefs: 0, say: hasFrame
+      ? '这个视频模型只能收首帧，角色参考图送不进去。请换支持参考图的模型。本次没有生成。'
+      : '这个视频模型不支持参考图，这一段又没有分镜首帧。请换模型或先生成分镜。' };
+  }
+  if (hasFrame && refCount) {
+    const n = Math.min(cap, refCount);
+    return { state: 'downgraded', field: 'reference_image', sendFrame: false, sendRefs: n + 1, say: '这个模型不能同时用首帧和参考图。分镜首帧会作为第一张参考图送出，另外 ' + n + ' 张角色或场景图一起送。' };
+  }
+  if (hasFrame) return { state: 'sent', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '将送出分镜首帧。' };
+  const n = Math.min(cap, refCount);
+  return { state: 'sent', field: 'reference_image', sendFrame: false, sendRefs: n, say: '将送出 ' + n + ' 张参考图。' };
+}
+
 function personFromRaw(raw, story) {
   const src = raw || {};
   const name = str(src.name, 40) || '表演者';
@@ -2616,7 +2737,7 @@ function personFromRaw(raw, story) {
     arc: str(src.arc, 180) || str(story && story.logline, 180),
     desc: str(src.desc, 240) || [face, hair, outfit].filter(Boolean).join('。'),
   };
-  person.imagePrompt = characterSheetPrompt(person);
+  person.imagePrompt = characterTurnaroundPrompt(person);
   return person;
 }
 

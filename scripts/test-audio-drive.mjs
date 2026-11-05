@@ -365,7 +365,7 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(/推开门走进雨里|音乐进来/.test(pkg.scenes[pkg.scenes.length - 1].shots[0].plotBeat || pkg.scenes[pkg.scenes.length - 1].shots[0].visual), '镜头没有接上这一段的情节');
   const person = pkg.characters[0];
   ok(person.name === '阿禾' && person.appearance && person.appearance.face && person.appearance.hair && person.appearance.build, '角色缺少脸、头发或体态');
-  ok(person.role && person.arc && person.imagePrompt && !/无文字|三视图|Male Lead/.test(person.imagePrompt), '角色图提示词仍是套话：' + person.imagePrompt);
+  ok(person.role && person.arc && person.imagePrompt && /脸|头发/.test(person.imagePrompt) && /三视图|正面、侧面、背面/.test(person.imagePrompt) && !/无文字|Male Lead/.test(person.imagePrompt), '角色图提示词应带具体外观和三视图：' + person.imagePrompt);
   ok(!/无文字/.test(pkg.locations[0].imagePrompt) && /砖墙/.test(pkg.locations[0].imagePrompt), '场景图没有用上具体描述');
   ok(pkg.imageSuffix && !person.imagePrompt.includes(pkg.imageSuffix), '出图约束不应出现在可编辑提示词里');
   const edited = AD.planMusicVideoPackage({
@@ -414,6 +414,47 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(progress.shots.have === 0 && progress.shots.total === 1 && progress.stage === 'refs', '设定没齐时不应进入分镜阶段');
   const down = AD.downstreamOf([{ fromNode: 'c', toNode: 'k' }, { fromNode: 'k', toNode: 'v' }], 'c');
   ok(down.indexOf('k') >= 0 && down.indexOf('v') >= 0, '重生成设定没有找到下游分镜和视频');
+  const oldNodes = {
+    hero: { id: 'hero', type: 'image', data: { label: '男主角', prompt: '我手改过的脸', assetId: 'keep-me', refLock: true } },
+    shot: { id: 'shot', type: 'text', data: { label: 'MV 剧照 1', prompt: '不要动这段文字' } },
+  };
+  const repaired = AD.planRefRepair({
+    characters: [{ name: '男主角', appearance: { face: '瘦脸', hair: '黑发' } }],
+    locations: [{ name: '旧巷' }],
+  }, oldNodes, 'audio-1');
+  const adopt = repaired.actions.find((a) => a.op === 'adopt' && a.name === '男主角');
+  const create = repaired.actions.find((a) => a.op === 'create' && a.name === '旧巷');
+  ok(adopt && adopt.nodeId === 'hero' && adopt.keepAsset && !adopt.patch.prompt && adopt.patch.mvRole === 'char' && adopt.patch.refName === '男主角', '旧画布没有按名字认领角色图，或改写了手改提示词');
+  ok(create && create.role === 'loc' && /旧巷/.test(create.prompt), '缺的场景图没有准备新建');
+  ok(!repaired.actions.some((a) => a.nodeId === 'shot'), '文字分镜卡被当成了参考图');
+  const sheetUrl = 'data:image/png;base64,abc';
+  const sceneUrl = 'data:image/png;base64,def';
+  const sent = AD.imageRefPayload([sheetUrl, sceneUrl], 'generations');
+  ok(sent.state === 'sent' && sent.field === 'image' && sent.image[0] === sheetUrl && sent.image[1] === sceneUrl, '图片请求没有带上参考图字节');
+  ok(AD.strippedRefIsFailure('image', 2) === true && AD.strippedRefIsFailure('watermark', 2) === false, '剥掉参考图字段仍会被当成成功');
+  const both = AD.videoConditionPlan({ hasFrameBlob: true, refCount: 2, frameMode: 'auto', refCap: 8 });
+  ok(both.state === 'downgraded' && both.field === 'reference_image' && both.sendRefs === 3, '首帧和参考图没有一起进入视频请求计划');
+  const blocked = AD.videoConditionPlan({ hasFrameBlob: false, refCount: 0 });
+  ok(blocked.state === 'missing', '没有图时视频计划仍是成功');
+  const unsupported = AD.videoConditionPlan({ hasFrameBlob: true, refCount: 2, refCap: 0 });
+  ok(unsupported.state === 'unsupported' && /送不进去/.test(unsupported.say), '不支持参考图的模型没有被拦住');
+  const client = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+  ok(client.includes("data-tl-gen-chars") && client.includes('生成角色图') && client.includes('生成设定图'), '音乐节点上没有生成角色图入口');
+  ok(client.includes('没有把去掉参考图的结果当成成功') && client.includes('没有改走不带图片的 /v1/videos'), '参考图失败后仍会改成纯文字成功');
+  ok(client.includes("hostRpc('mvRepairRefs'"), '旧画布修复没有接到主机');
+  const host = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  ok(host.includes('async mvRepairRefs') && host.includes('planRefRepair'), '主机没有补角色图的接口');
+  const planBody = (src) => {
+    const rest = src.slice(src.indexOf('function videoConditionPlan'));
+    const cuts = ['\nfunction ', '\n    function '].map((mark) => rest.indexOf(mark, 10)).filter((n) => n > 0);
+    return rest.slice(0, Math.min(...cuts)).split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
+  };
+  const modSrc = fs.readFileSync(path.join(ROOT, 'audio-drive.js'), 'utf8');
+  ok(planBody(client) === planBody(modSrc), '页面上的视频参考计划与模块不一致');
+  const foreign = AD.planRefRepair({ characters: [{ name: '男主角' }], locations: [] }, {
+    other: { id: 'other', type: 'image', data: { label: '男主角', mvFrom: 'audio-2', assetId: 'nope' } },
+  }, 'audio-1');
+  ok(foreign.actions[0] && foreign.actions[0].op === 'create', '另一首歌的角色图被认领了');
 }
 
 // ---------- 失败后再生成：先分类，再改参数 ----------
@@ -686,6 +727,30 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   }, {});
   ok(edited.ok === true && edited.package.scenes[0].join === 'continuous', '时间轴编辑没有改成续帧');
   ok(edited.package.scenes[0].refs.characters[0] === '糯糯', '时间轴编辑没有改参考角色');
+  const rpc = mod._internals.rpcMethods();
+  const docPath = path.join(process.env.DSH_IC_PROJECTS_DIR, projectId + '.json');
+  const before = JSON.parse(fs.readFileSync(docPath, 'utf8'));
+  const analysisJson = JSON.stringify((before.nodes[analyzed.nodeId].data || {}).analysis);
+  const styleText = before.nodes[analyzed.nodeId].data.styleText;
+  const hero = Object.values(before.nodes).find((n) => n && n.data && n.data.mvRole === 'char');
+  const place = Object.values(before.nodes).find((n) => n && n.data && n.data.mvRole === 'loc');
+  const heroName = hero.data.refName;
+  hero.data.label = heroName;
+  hero.data.prompt = '手改过的脸';
+  hero.data.assetId = 'uploaded-face';
+  hero.data.refLock = true;
+  delete hero.data.mvRole;
+  delete hero.data.refName;
+  delete before.nodes[place.id];
+  fs.writeFileSync(docPath, JSON.stringify(before));
+  const repaired = await rpc.mvRepairRefs({ projectId, nodeId: analyzed.nodeId });
+  ok(repaired.ok === true && repaired.adopted >= 1 && repaired.created >= 1, '旧画布修复没有认领角色并补场景：' + JSON.stringify(repaired));
+  const after = JSON.parse(fs.readFileSync(docPath, 'utf8'));
+  const heroAfter = after.nodes[hero.id];
+  ok(heroAfter.data.mvRole === 'char' && heroAfter.data.refName === heroName && heroAfter.data.prompt === '手改过的脸' && heroAfter.data.assetId === 'uploaded-face' && heroAfter.data.refLock === true, '认领后改掉了手改提示词、图片或定稿');
+  ok(JSON.stringify(after.nodes[analyzed.nodeId].data.analysis) === analysisJson, '补角色图重跑了听歌分析');
+  ok(after.nodes[analyzed.nodeId].data.styleText === styleText, '补角色图改掉了风格句');
+  ok(Object.values(after.nodes).some((n) => n && n.data && n.data.mvRole === 'loc' && n.data.refName === place.data.refName), '缺的场景图没有建出来');
 }
 
 function loadSegmentPlanner() {

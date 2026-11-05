@@ -1181,6 +1181,13 @@ function revealCanvasInRight() {
       'tlRelock': '重新生成已定稿的设定，下游分镜和视频会标成需重生成',
       'tlQueued': '排队中',
       'tlCancelAll': '全部停止',
+      'tlGenChars': '生成角色图',
+      'tlGenSheet': '生成设定图',
+      'tlRegenSheet': '重新生成',
+      'tlRefReady': '已生成',
+      'tlRefEmpty': '未生成',
+      'tlUnlock': '取消定稿',
+      'tlRepairRefs': '补上角色/场景图',
       'genConcurrency': '并发数',
       'genConcurrencyHint': '同时发出的请求数。图片默认 4，视频默认 2。遇到限流会自动减半。',
       'tlZoom': '缩放',
@@ -2274,6 +2281,13 @@ function revealCanvasInRight() {
       'tlRelock': 'Regenerate this locked sheet. Downstream frames and videos will be marked for redo',
       'tlQueued': 'Queued',
       'tlCancelAll': 'Stop all',
+      'tlGenChars': 'Generate character sheets',
+      'tlGenSheet': 'Generate sheet',
+      'tlRegenSheet': 'Regenerate',
+      'tlRefReady': 'Generated',
+      'tlRefEmpty': 'Not generated',
+      'tlUnlock': 'Unlock',
+      'tlRepairRefs': 'Add character / scene images',
       'genConcurrency': 'Concurrency',
       'genConcurrencyHint': 'How many requests to send at once. Images default to 4, videos to 2. A rate limit halves it.',
       'tlZoom': 'Zoom',
@@ -3158,6 +3172,10 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-mtl-step{flex:none;height:22px;padding:0 8px;border-radius:11px;background:#1a1a1a;color:#888;font-size:11px;line-height:22px;border:1px solid #2a2a2a;}
 .dshic-mtl-step.is-on{background:#f2f2f2;color:#111;border-color:#f2f2f2;}
 .dshic-mtl-step.is-done{color:#ddd;border-color:#3a3a3a;}
+.dshic-mtl-ref{flex:none;display:flex;gap:8px;padding:8px;background:#111;border-bottom:1px solid #2a2a2a;overflow:auto;}
+.dshic-mtl-ref-card{flex:none;width:148px;display:flex;flex-direction:column;gap:4px;padding:6px;background:#161616;border:1px solid #2a2a2a;border-radius:8px;}
+.dshic-mtl-ref-img{width:100%;height:72px;object-fit:cover;background:#000;border-radius:4px;}
+.dshic-mtl-ref-name{color:#eee;font-size:12px;line-height:16px;}
 .dshic-mtl-go{height:32px;padding:0 16px;border:0;border-radius:8px;background:#f2f2f2;color:#111;font-size:13px;cursor:pointer;}
 .dshic-mtl-go:disabled{background:#333;color:#888;cursor:default;}
 .dshic-mtl-sec-intro{background:#3a2a55;color:#f3e9ff;}
@@ -6323,6 +6341,9 @@ function queueThumb(assetId) {
       if (!res.ok && res.status === 400) {
         const bad = unsupportedFieldName(res.text);
         if (bad && Object.prototype.hasOwnProperty.call(body, bad)) {
+          if (refs.length && (bad === 'image' || bad === 'reference_images')) {
+            throw new Error('这个图片模型不支持参考图字段「' + bad + '」。请把图片模式改成编辑，或换一个支持参考图的模型。没有把去掉参考图的结果当成成功。');
+          }
           const retried = { ...body };
           delete retried[bad];
           res = await send(retried, '图片 API(剥字段重试)');
@@ -7787,6 +7808,10 @@ function queueThumb(assetId) {
           try {
             return await relayVideoContentFallback(base, prompt, frameBlob, o, s, headers);
           } catch (e) { e1 = e; }
+          if (frameBlob || vRefs.length) {
+            throw new Error('视频 API HTTP ' + res.status + ' @ ' + base + '：' + res.text.slice(0, 160)
+              + '；带参考图的 content 格式也失败了（' + ((e1 && e1.message) || e1) + '）。没有改走不带图片的 /v1/videos。');
+          }
           try {
             return await soraVideosFallback(base, prompt, o, s, headers);
           } catch (e) { e2 = e; }
@@ -11646,6 +11671,31 @@ function queueThumb(assetId) {
       }
       return missing;
     }
+    function videoConditionPlan(input) {
+      const o = input || {};
+      const refCount = Math.max(0, Number(o.refCount) || 0);
+      const hasFrame = !!o.hasFrameBlob;
+      const mode = o.frameMode || 'auto';
+      const cap = o.refCap == null ? 8 : Number(o.refCap);
+      if (!hasFrame && !refCount) {
+        return { state: 'missing', field: '', sendFrame: false, sendRefs: 0, say: '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
+      }
+      if (mode === 'hard' && hasFrame && refCount) {
+        return { state: 'unsupported', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '硬首帧会丢掉角色参考图。请改成自动，让首帧和参考图一起送。本次没有生成。' };
+      }
+      if (refCount && cap <= 0) {
+        return { state: 'unsupported', field: hasFrame ? 'first_frame' : '', sendFrame: hasFrame, sendRefs: 0, say: hasFrame
+          ? '这个视频模型只能收首帧，角色参考图送不进去。请换支持参考图的模型。本次没有生成。'
+          : '这个视频模型不支持参考图，这一段又没有分镜首帧。请换模型或先生成分镜。' };
+      }
+      if (hasFrame && refCount) {
+        const n = Math.min(cap, refCount);
+        return { state: 'downgraded', field: 'reference_image', sendFrame: false, sendRefs: n + 1, say: '这个模型不能同时用首帧和参考图。分镜首帧会作为第一张参考图送出，另外 ' + n + ' 张角色或场景图一起送。' };
+      }
+      if (hasFrame) return { state: 'sent', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '将送出分镜首帧。' };
+      const n = Math.min(cap, refCount);
+      return { state: 'sent', field: 'reference_image', sendFrame: false, sendRefs: n, say: '将送出 ' + n + ' 张参考图。' };
+    }
     function markDownstreamStale(nodeId) {
       const ids = [];
       const seen = new Set();
@@ -11852,6 +11902,15 @@ function queueThumb(assetId) {
         if (type === 'image') {
           // 参考图 = **只取连进 ref 口的连线**（顺序 refOrder）；@引用只注入文字设定，不追加图片
           const { refs, entities } = await collectRefs(n, prompt, bible);
+          if (n.data && n.data.mvRole === 'shot') {
+            const wired = S.graph.edges.filter((e) => e.toNode === n.id && (e.toPort === 'ref' || e.toPort === 'frame'));
+            const ready = wired.filter((e) => {
+              const src = S.graph.nodes[e.fromNode];
+              return src && src.data && src.data.assetId;
+            });
+            if (!ready.length) throw new Error('这一张分镜没有连上已生成的角色或场景图片，不能只靠文字生成。');
+            if (!refs.length) throw new Error('参考图连上了，但图片文件没有读到，本次没有发送。');
+          }
           const metas = refs.map((r) => ({ blob: r.blob, name: r.name, category: r.category, assetId: r.assetId }));
           let p = buildEffectivePrompt(prompt, refs, entities, bible, true); // light：图片不内联设定全文（防文字渲染污染 + 参考图约束稀释）
           // 技能包的「镜头语言锁」：只追加风格参数与负向词，不内联叙事与剪辑（不污染图片提示词）
@@ -12044,6 +12103,18 @@ function queueThumb(assetId) {
           const mcfg = resolveVideoModelCfg(settings, nodeVideoModelRef(n));
           if (!mcfg) throw new Error(T('errNoVideoModel'));
           if (sbUp && !durationPlan.value) addWarn('已连接分镜但暂无镜头时长：视频时长回退 5s（先生成分镜镜头后重跑）');
+          if (n.data && n.data.mvRole === 'video') {
+            const vendor = detectVideoVendor(mcfg);
+            const caps = (typeof VIDEO_REF_CAPS !== 'undefined' && VIDEO_REF_CAPS[vendor]) || { img: 8 };
+            const delivery = videoConditionPlan({
+              hasFrameBlob: !!frameBlob,
+              refCount: refs.length,
+              frameMode: n.data.frameMode || 'auto',
+              refCap: caps.img,
+            });
+            update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refDelivery = delivery; });
+            if (delivery.state === 'missing' || delivery.state === 'unsupported') throw new Error(delivery.say);
+          }
           const blob = await apiVideo(p, useFrame ? frameBlob : null, mcfg, {
             duration: autoDuration, resolution: n.data.resolution, ratio: n.data.ratio,
             frameMode, // auto=尾帧降级为参考图（保留实体参考图）/ hard=硬首帧（放弃参考图）/ off=忽略首帧
@@ -14525,7 +14596,12 @@ function queueThumb(assetId) {
           !done
             ? h('div', { key: 'empty', className: 'dshic-media-empty', 'data-node-content': '1', onClick: openPanel },
                 h('span', { className: 'dshic-media-empty-ic' }, Ic('plus', 17)),
-                h('span', { className: 'dshic-media-empty-t' }, T(kind === 'video' ? 'clickToGenVideo' : 'clickToGenImage')))
+                h('span', { className: 'dshic-media-empty-t' }, (n.data.mvRole === 'char' || n.data.mvRole === 'loc') ? T('tlGenSheet') : T(kind === 'video' ? 'clickToGenVideo' : 'clickToGenImage')),
+                (n.data.mvRole === 'char' || n.data.mvRole === 'loc') ? h('button', {
+                  type: 'button', className: 'dshic-mini', 'data-tl-gen-sheet': '1',
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onClick: (e) => { e.stopPropagation(); runGenNode(n); },
+                }, T('tlGenSheet')) : null)
             : null,
           // 右下角动作区：放大/全屏键紧贴分辨率条（同一行横向排列）
           // 播放中（控件条出现）时隐藏，避免压住进度条。
@@ -14558,6 +14634,7 @@ function queueThumb(assetId) {
                 statusLabel + ((running && n.data.progress) ? ' ' + n.data.progress : ''))
             : null,
           n.data.error ? h('div', { key: 'err', className: 'dshic-media-err', title: n.data.error }, '⚠ ' + (n.data.adapt && n.data.adapt.say ? n.data.adapt.say : n.data.error)) : null,
+          n.data.refDelivery && n.data.refDelivery.say ? h('div', { key: 'refsay', className: 'dshic-media-err', 'data-ref-delivery': n.data.refDelivery.state }, n.data.refDelivery.say) : null,
         ),
         n.data.adapt ? h('div', { key: 'adapt', className: 'dshic-adapt', 'data-no-drag': '1', onPointerDown: (e) => e.stopPropagation() },
           h('div', null, n.data.adapt.say || ''),
@@ -14622,7 +14699,7 @@ function queueThumb(assetId) {
       const hist = Array.isArray(d.history) ? d.history.map((x) => (x && x.assetId) || '').join(',') : '';
       return [n.id, n.type, n.w, n.h, n.x, n.y, n.z, d.label, d.status, d.statusText, d.progress, d.error,
         d.assetId, d.lastAssetId, d.lastAssetVideo, d.ratio, d.assetW, d.assetH, d.imageCount, d.aiStatus, hist,
-        d.running].join('|');
+        d.running, d.mvRole, d.refLock ? 1 : 0, d.needRegen ? 1 : 0, d.refDelivery && d.refDelivery.say].join('|');
     }
     /** MediaNodeBody memo 比较：相同渲染签名 + 相同连线签名 → 跳过重渲染（选中/悬浮等全树状态不会带动媒体重渲染）。 */
     function mediaNodePropsEqual(prev, next) {
@@ -15570,6 +15647,18 @@ function queueThumb(assetId) {
         URL.revokeObjectURL(url);
       }
     }
+    function RefThumb({ assetId }) {
+      const [src, setSrc] = useState('');
+      useEffect(() => {
+        let live = true;
+        if (!assetId) { setSrc(''); return undefined; }
+        assetUrl(assetId).then((u) => { if (live) setSrc(u || ''); }).catch(() => {});
+        return () => { live = false; };
+      }, [assetId]);
+      if (!src) return null;
+      return h('img', { className: 'dshic-mtl-ref-img', src, alt: '' });
+    }
+
     function AudioNodeBody({ n }) {
       const url = useAssetUrl(n.data.assetId);
       const pkg = n.data.mvPackage;
@@ -15957,6 +16046,13 @@ function queueThumb(assetId) {
         };
         return { characters: tally('char'), locations: tally('loc'), shots: tally('shot'), videos: tally('video') };
       };
+      const repairRefs = async () => {
+        await flushSave();
+        const r = await hostRpc('mvRepairRefs', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id });
+        const full = await hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() });
+        mergeHostDoc(S.activeId, full, activeCanvasId());
+        return r;
+      };
       const genRefsOnly = async () => {
         const list = owned().filter((nd) => (nd.data.mvRole === 'char' || nd.data.mvRole === 'loc') && !nd.data.assetId);
         setBusy('gen');
@@ -15994,9 +16090,14 @@ function queueThumb(assetId) {
           };
         });
       };
+      const ensureRefs = async () => {
+        const hasPlan = pkg && (((pkg.characters && pkg.characters.length) || (pkg.locations && pkg.locations.length)));
+        if (hasPlan) await repairRefs();
+        return refStage();
+      };
       const genAll = async () => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
-        const stage = refStage();
+        const stage = await ensureRefs();
         const missing = (stage.characters.total - stage.characters.have) + (stage.locations.total - stage.locations.have);
         if (missing > 0) {
           update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = { count: missing, chars: stage.characters.total - stage.characters.have, locs: stage.locations.total - stage.locations.have }; });
@@ -16029,7 +16130,7 @@ function queueThumb(assetId) {
       };
       const genSceneAt = async (index) => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
-        const stage = refStage();
+        const stage = await ensureRefs();
         const missing = (stage.characters.total - stage.characters.have) + (stage.locations.total - stage.locations.have);
         if (missing > 0) {
           update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = { count: missing, chars: stage.characters.total - stage.characters.have, locs: stage.locations.total - stage.locations.have }; });
@@ -16046,7 +16147,7 @@ function queueThumb(assetId) {
       };
       const genRange = async (from) => {
         if (!owned().some((nd) => nd.type === 'video')) await pushCanvas();
-        const stage = refStage();
+        const stage = await ensureRefs();
         const missing = (stage.characters.total - stage.characters.have) + (stage.locations.total - stage.locations.have);
         if (missing > 0) {
           update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = { count: missing, chars: stage.characters.total - stage.characters.have, locs: stage.locations.total - stage.locations.have }; });
@@ -16244,6 +16345,30 @@ function queueThumb(assetId) {
           const current = stage.characters.locked < stage.characters.total || stage.locations.locked < stage.locations.total ? 0 : stage.shots.have < stage.shots.total ? 1 : 2;
           return steps.map((pair, i) => h('span', { key: pair[0], className: 'dshic-mtl-step' + (i === current ? ' is-on' : '') + (i < current ? ' is-done' : '') }, pair[0] + ' ' + pair[1]));
         })()) : null,
+        pkg && ((pkg.characters && pkg.characters.length) || (pkg.locations && pkg.locations.length)) ? h('div', { key: 'refstrip', className: 'dshic-mtl-ref', 'data-tl-ref-strip': '1' },
+          [...(pkg.characters || []).map((c) => ({ role: 'char', name: c.name })), ...(pkg.locations || []).map((c) => ({ role: 'loc', name: c.name }))].filter((it) => it.name).map((it) => {
+            const node = Object.values(S.graph.nodes).find((nd) => nd.data && nd.data.mvFrom === n.id && nd.data.mvRole === it.role && nd.data.refName === it.name);
+            const asset = node && node.data && node.data.assetId;
+            const locked = !!(node && node.data && node.data.refLock);
+            const stale = !!(node && node.data && node.data.needRegen);
+            const status = !asset ? T('tlRefEmpty') : (stale ? T('tlNeedRedo') : (locked ? T('tlLocked') : T('tlRefReady')));
+            return h('div', { key: it.role + ':' + it.name, className: 'dshic-mtl-ref-card' },
+              h(RefThumb, { assetId: asset || '' }),
+              h('div', { className: 'dshic-mtl-ref-name' }, it.name),
+              h('div', { className: 'dshic-hint' }, status),
+              h('div', { className: 'dshic-row', style: { gap: 4 } },
+                h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, 'data-tl-gen-sheet': it.name, onClick: async () => {
+                  setBusy('one');
+                  try {
+                    await repairRefs();
+                    const again = Object.values(S.graph.nodes).find((nd) => nd.data && nd.data.mvFrom === n.id && nd.data.mvRole === it.role && nd.data.refName === it.name);
+                    if (again && again.data && again.data.assetId) markDownstreamStale(again.id);
+                    if (again) await runGenNode(again);
+                  } catch (e) { toast(String(e && e.message || e)); }
+                  finally { setBusy(''); }
+                } }, asset ? T('tlRegenSheet') : T('tlGenSheet')),
+                node && asset ? h('button', { type: 'button', className: 'dshic-mini', onClick: () => update((s) => { const nd = s.graph.nodes[node.id]; if (nd) nd.data.refLock = !nd.data.refLock; }) }, locked ? T('tlUnlock') : T('tlLock')) : null));
+          })) : null,
         n.data.refConfirm ? h('div', { className: 'dshic-adapt' },
           h('div', null, '将先生成角色 ' + (n.data.refConfirm.chars || 0) + ' 张、场景 ' + (n.data.refConfirm.locs || 0) + ' 张'),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: genRefsOnly }, T('tlAgentConfirm'))) : null,
@@ -16309,6 +16434,18 @@ function queueThumb(assetId) {
             onClick: buildTimeline,
           }, busy === 'build' ? '…' : T('tlGenerate')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: pushCanvas }, T('tlPush')),
+          h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, 'data-tl-gen-chars': '1', onClick: async () => {
+            setBusy('chars');
+            try {
+              const r = await repairRefs();
+              toast((r && r.text) || T('tlRepairRefs'));
+              const missing = Object.values(S.graph.nodes).filter((nd) => nd.data && nd.data.mvFrom === n.id && (nd.data.mvRole === 'char' || nd.data.mvRole === 'loc') && !nd.data.assetId);
+              if (missing.length) {
+                update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refConfirm = { count: missing.length, chars: missing.filter((x) => x.data.mvRole === 'char').length, locs: missing.filter((x) => x.data.mvRole === 'loc').length }; });
+              }
+            } catch (e) { toast(String(e && e.message || e)); }
+            finally { setBusy(''); }
+          } }, T('tlGenChars')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: genAll }, T('tlGenAll')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: regenFailed }, T('tlRetryFailed')),
           mode === 'create' && url && !(an && an.sections) ? h('button', {
