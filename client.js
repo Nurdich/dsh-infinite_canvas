@@ -1191,6 +1191,13 @@ function revealCanvasInRight() {
       'tlNeedConfirm': '先确认分段',
       'tlStartAnalyze': '开始分析',
       'tlAnalyzing': '正在听',
+      'tlRetry': '重试',
+      'tlReceiving': '仍在接收',
+      'tlWaitingChunk': '等待下一段',
+      'tlConnecting': '正在连接',
+      'caThinking': '思考中…',
+      'audioIdle': '分析超时',
+      'audioIdleHint': '留空表示 90 秒没有新数据才中断。每一段最长取 10 分钟和 4 倍这段时长里更大的那个，封顶 30 分钟。',
       'tlNoProvider': '没有配置音频理解供应商或 Key，已改用本地波形。听不到歌词。',
       'tlNeedOmni': '请先在设置里配置音频理解（供应商、Key 和模型），再开始分析。不会改用其他文本模型。',
       'tlErrDetail': '详情',
@@ -2264,6 +2271,13 @@ function revealCanvasInRight() {
       'tlNeedConfirm': 'Confirm the sections first',
       'tlStartAnalyze': 'Start analysis',
       'tlAnalyzing': 'Listening',
+      'tlRetry': 'Retry',
+      'tlReceiving': 'Still receiving',
+      'tlWaitingChunk': 'Waiting for the next chunk',
+      'tlConnecting': 'Connecting',
+      'caThinking': 'Thinking…',
+      'audioIdle': 'Analysis timeout',
+      'audioIdleHint': 'Blank means abort after 90 seconds with no new data. Each window runs at least 10 minutes, or 4× its length, and never more than 30 minutes.',
       'tlNoProvider': 'No audio-understanding provider or key. Using a local waveform pass, which cannot hear lyrics.',
       'tlNeedOmni': 'Configure Audio understanding (provider, key, and model) before analyzing. This will not call another text model.',
       'tlErrDetail': 'Details',
@@ -3092,6 +3106,9 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-mtl-agent-card{background:#111;border:1px solid #333;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;}
 .dshic-mtl-agent-form{display:flex;gap:4px;padding:8px;border-top:1px solid #2a2a2a;}
 .dshic-mtl-agent-form input{flex:1;min-width:0;height:28px;background:#111;color:#eee;border:1px solid #333;border-radius:6px;padding:0 8px;}
+.dshic-mtl-stream{max-height:160px;overflow:auto;white-space:pre-wrap;margin:0;background:#111;color:#ececec;border:1px solid #2a2a2a;border-radius:8px;padding:8px;font-size:12px;line-height:1.45;}
+.dshic-mtl-think{background:#111;color:#ccc;border:1px solid #2a2a2a;border-radius:8px;padding:6px 8px;font-size:12px;}
+.dshic-mtl-think pre{white-space:pre-wrap;margin:4px 0 0;}
 .dshic-assist{flex:none;width:300px;display:flex;flex-direction:column;min-height:0;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);border-left:1px solid var(--dshic-line2);}
 .dshic-assist-hd{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1);font-size:12px;}
 .dshic-assist-chip{flex:none;font-size:11px;padding:4px 10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);}
@@ -3965,7 +3982,7 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       for (const p of settings.audioProviders || []) {
         for (const m of (p.models || [])) {
           if (!m || !m.id || !String(m.model || '').trim()) continue;
-          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '' });
+          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '', analysisIdleSec: Number(p.analysisIdleSec) || 0 });
         }
       }
       return out;
@@ -9307,13 +9324,45 @@ function queueThumb(assetId) {
     // ============================================================
     // AI 文本（剧本 / 分镜提示词）— 走 Harness 配置的 DeepSeek 模型
     // ============================================================
-    async function hostRpc(method, args) {
+    function analysisOuterMaxMs() {
+      return 30 * 60 * 1000 * 3 + 2000 + 6000 + 15000;
+    }
+    function formatListenClock(ms) {
+      const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      if (m > 0) return m + ' 分 ' + String(sec).padStart(2, '0') + ' 秒';
+      return sec + ' 秒';
+    }
+    function listenLine(p, index, count) {
+      const i = (p && Number.isFinite(Number(p.windowIndex)) ? Number(p.windowIndex) : index) + 1;
+      const n = (p && Number(p.windowCount)) || count || 1;
+      const elapsed = formatListenClock(p && p.elapsedMs);
+      const tail = p && p.receiving ? (' · ' + T('tlReceiving')) : (p && p.lastChunkAt ? (' · ' + T('tlWaitingChunk')) : (' · ' + T('tlConnecting')));
+      return T('tlAnalyzing') + ' ' + i + '/' + n + ' · ' + elapsed + tail;
+    }
+    function pollOmniProgress(id, onTick) {
+      let stop = false;
+      const tick = async () => {
+        if (stop) return;
+        try {
+          const r = await hostRpc('audioProgress', { id });
+          if (r && r.progress && onTick) onTick(r.progress);
+        } catch { /* 轮询失败不打断正在进行的分析 */ }
+        if (!stop) setTimeout(tick, 400);
+      };
+      tick();
+      return () => { stop = true; };
+    }
+    async function hostRpc(method, args, timeoutMs) {
       let res;
+      const ms = Number(timeoutMs) || 0;
       try {
         res = await fetch('/infinite-canvas/api/rpc', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ method, args: args ?? {} }),
+          ...(ms > 0 ? { signal: AbortSignal.timeout(ms) } : {}),
         });
       } catch (e) {
         throw new Error(T('connectFailed') + '：' + e.message);
@@ -9322,7 +9371,12 @@ function queueThumb(assetId) {
       let body = null;
       try { body = JSON.parse(raw); } catch { /* SPA 兜底页返回 HTML → Host 后台未加载最新插件 */ }
       if (!body) throw new Error(T('restartHint'));
-      if (!res.ok || body.error) throw new Error(body.error || (T('rpcFail') + ' HTTP ' + res.status));
+      if (!res.ok || body.error) {
+        const err = new Error(body.error || (T('rpcFail') + ' HTTP ' + res.status));
+        if (body.partial) err.partial = body.partial;
+        if (body.retry) err.retry = true;
+        throw err;
+      }
       return body;
     }
     /** 从模型输出中提取第一个平衡的 JSON 对象（兼容 ```json 围栏与 think 块）。 */
@@ -10053,7 +10107,19 @@ function queueThumb(assetId) {
       const text = String(message || '').trim();
       if (!text && !(extra && extra.confirmed)) return;
       if (!S.activeId) return;
-      update((s) => { s.assistantBusy = true; });
+      const progressId = 'ca-' + Date.now();
+      update((s) => { s.assistantBusy = true; s.assistantLive = { text: '', reasoning: '', line: T('tlConnecting'), retryText: text }; });
+      const stopPoll = pollOmniProgress(progressId, (p) => {
+        update((s) => {
+          const prev = s.assistantLive || {};
+          s.assistantLive = {
+            text: p.text || prev.text || '',
+            reasoning: p.reasoning || prev.reasoning || '',
+            line: p.phase === 'analysis' ? listenLine(p, p.windowIndex, p.windowCount) : (p.receiving ? T('tlReceiving') : (prev.line || '')),
+            retryText: text,
+          };
+        });
+      });
       try {
         await flushSave();
         const cfg = resolveAudioModelCfg(loadSettings(), '');
@@ -10065,21 +10131,31 @@ function queueThumb(assetId) {
           scopeId: S.assistantScope || '',
           confirmed: !!(extra && extra.confirmed),
           pending: (extra && extra.pending) || null,
-          provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' } : null,
-        });
+          progressId,
+          provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '', analysisIdleSec: cfg.analysisIdleSec || '' } : null,
+        }, analysisOuterMaxMs());
         const full = await hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() });
         mergeHostDoc(S.activeId, full, activeCanvasId());
         const chat = (r && Array.isArray(r.chat) && r.chat) || (S.assistantChat || []);
-        update((s) => { s.assistantChat = chat; s.assistantBusy = false; });
+        update((s) => { s.assistantChat = chat; s.assistantBusy = false; s.assistantLive = null; });
         saveAssistantChat(S.activeId, activeCanvasId(), chat);
         flushSave();
       } catch (e) {
+        const live = S.assistantLive || {};
+        const partial = (e && e.partial) || { text: live.text || '', reasoning: live.reasoning || '' };
         update((s) => {
           s.assistantBusy = false;
-          s.assistantChat = (s.assistantChat || []).concat([{ role: 'assistant', text: String((e && e.message) || e), modelError: 'llm' }]).slice(-40);
+          s.assistantLive = null;
+          s.assistantChat = (s.assistantChat || []).concat([{
+            role: 'assistant',
+            text: [partial.text, String((e && e.message) || e)].filter(Boolean).join('\n'),
+            reasoning: partial.reasoning || '',
+            modelError: String((e && e.message) || e),
+            retryText: text,
+          }]).slice(-40);
         });
         saveAssistantChat(S.activeId, activeCanvasId(), S.assistantChat);
-      }
+      } finally { stopPoll(); }
     }
     function initStore() {
       S.projects = lsGet(LS_PROJECTS, []);
@@ -11026,16 +11102,20 @@ function queueThumb(assetId) {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(analysisOuterMaxMs()),
       });
       const raw = await res.text();
       let body = null;
       try { body = JSON.parse(raw); } catch { body = null; }
       if (!res.ok || !body || body.error || !body.analysis) {
-        throw new Error((body && body.error) || (T('audioAnalyzeFail') + ' HTTP ' + res.status));
+        const err = new Error((body && body.error) || (T('audioAnalyzeFail') + ' HTTP ' + res.status));
+        if (body && body.partial) err.partial = body.partial;
+        if (body && body.retry) err.retry = true;
+        throw err;
       }
       return body.analysis;
     }
-    async function genAudioNode(n) {
+    async function genAudioNode(n, opts) {
       if (!n.data.assetId) throw new Error(T('audioNeedFile'));
       const blob = await assetBlob(n.data.assetId);
       if (!blob || !blob.size) throw new Error(T('audioNeedFile'));
@@ -11056,19 +11136,66 @@ function queueThumb(assetId) {
         {
           const planned = await hostRpc('audioPlanWindows', { durationSec, sampleRate: 16000 });
           const windows = (planned && planned.windows && planned.windows.length) ? planned.windows : [{ startSec: 0, endSec: durationSec, offsetSec: 0 }];
-          const parts = [];
-          for (let i = 0; i < windows.length; i++) {
+          const resume = !!(opts && opts.resume);
+          const startAt = resume ? Math.max(0, Math.min(windows.length - 1, Number(n.data.analyzeResume) || 0)) : 0;
+          const parts = resume && Array.isArray(n.data.analyzeParts) ? n.data.analyzeParts.slice(0, startAt) : [];
+          const idleMs = Number(cfg.analysisIdleSec) > 0 ? Number(cfg.analysisIdleSec) * 1000 : undefined;
+          for (let i = startAt; i < windows.length; i++) {
             const w = windows[i];
-            update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.analyzeProgress = T('tlAnalyzing') + ' ' + (i + 1) + '/' + windows.length; });
-            const view = sliceBufferView(buf, w.startSec, w.endSec);
-            const ds = downsampleMono(view, 16000, view.duration);
-            const wav = pcmToWavBlob(ds.samples, ds.sampleRate);
-            const audioBase64 = arrayBufferToBase64(await wav.arrayBuffer());
-            const piece = await postAudioUnderstand({
-              provider: { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '' },
-              audioBase64, format: 'wav', durationSec: view.duration, energy: [], hopSec: 0.25, truncated: false,
+            const progressId = 'aw-' + n.id + '-' + i + '-' + Date.now();
+            const stopPoll = pollOmniProgress(progressId, (p) => {
+              update((s) => {
+                const nd = s.graph.nodes[n.id];
+                if (!nd) return;
+                nd.data.analyzeProgress = listenLine(p, i, windows.length);
+                if (p.text) nd.data.analyzePartial = p.text;
+                if (p.reasoning) nd.data.analyzeReasoning = p.reasoning;
+                nd.data.analyzeReceiving = !!p.receiving;
+              });
             });
-            parts.push({ offsetSec: w.offsetSec || w.startSec || 0, analysis: piece });
+            try {
+              update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.analyzeProgress = listenLine(null, i, windows.length); });
+              const view = sliceBufferView(buf, w.startSec, w.endSec);
+              const ds = downsampleMono(view, 16000, view.duration);
+              const wav = pcmToWavBlob(ds.samples, ds.sampleRate);
+              const audioBase64 = arrayBufferToBase64(await wav.arrayBuffer());
+              const piece = await postAudioUnderstand({
+                provider: { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '', analysisIdleSec: cfg.analysisIdleSec || '' },
+                audioBase64, format: 'wav', durationSec: view.duration, idleMs, progressId,
+                windowIndex: i, windowCount: windows.length, energy: [], hopSec: 0.25, truncated: false,
+              });
+              parts.push({ offsetSec: w.offsetSec || w.startSec || 0, analysis: piece });
+              update((s) => {
+                const nd = s.graph.nodes[n.id];
+                if (!nd) return;
+                nd.data.analyzeParts = parts.slice();
+                nd.data.analyzeResume = i + 1;
+                nd.data.analyzePartial = '';
+                nd.data.analyzeRetry = false;
+              });
+            } catch (e) {
+              let partial = e && e.partial;
+              try {
+                const last = await hostRpc('audioProgress', { id: progressId });
+                if (last && last.progress) {
+                  partial = {
+                    text: (partial && partial.text) || last.progress.text || '',
+                    reasoning: (partial && partial.reasoning) || last.progress.reasoning || '',
+                  };
+                }
+              } catch { /* 进度已经丢掉时，保留错误对象里的半截文本 */ }
+              update((s) => {
+                const nd = s.graph.nodes[n.id];
+                if (!nd) return;
+                nd.data.analyzeParts = parts.slice();
+                nd.data.analyzeResume = i;
+                nd.data.analyzeRetry = true;
+                if (partial && partial.text) nd.data.analyzePartial = partial.text;
+                if (partial && partial.reasoning) nd.data.analyzeReasoning = partial.reasoning;
+                nd.data.error = String((e && e.message) || e);
+              });
+              throw e;
+            } finally { stopPoll(); }
           }
           const merged = windows.length === 1 ? { analysis: parts[0].analysis } : await hostRpc('audioMergeAnalyses', { parts, durationSec });
           analysis = (merged && merged.analysis) || parts[0].analysis;
@@ -11082,6 +11209,10 @@ function queueThumb(assetId) {
           nd.data.status = 'done';
           nd.data.error = null;
           nd.data.analyzeProgress = '';
+          nd.data.analyzePartial = '';
+          nd.data.analyzeReasoning = '';
+          nd.data.analyzeRetry = false;
+          nd.data.analyzeResume = 0;
           nd.data.analyzeLocal = analysis.method !== 'model';
           nd.data.analyzeModel = cfg.model;
           nd.data.sectionsConfirmed = false;
@@ -15170,21 +15301,36 @@ function queueThumb(assetId) {
             if (extra && Array.isArray(extra.durations)) allowedDurations = extra.durations;
             else if (extra && Array.isArray(extra.allowedDurations)) allowedDurations = extra.allowedDurations;
           } catch { allowedDurations = undefined; }
-          const r = await hostRpc('audioBuildTimeline', {
-            projectId: S.activeId, nodeId: n.id, style,
-            analysis: (live && live.data && live.data.analysis) || analysis,
-            ...(live && live.data && live.data.storyEdited && live.data.mvPackage && live.data.mvPackage.story ? { story: live.data.mvPackage.story } : {}),
-            ...(allowedDurations ? { allowedDurations } : {}),
+          const progressId = 'tl-' + n.id + '-' + Date.now();
+          const stopPoll = pollOmniProgress(progressId, (p) => {
+            update((s) => {
+              const nd = s.graph.nodes[n.id];
+              if (!nd) return;
+              if (p.text) nd.data.planPartial = p.text;
+              if (p.reasoning) nd.data.planReasoning = p.reasoning;
+              nd.data.analyzeProgress = p.receiving ? T('tlReceiving') : T('tlConnecting');
+            });
           });
+          let r;
+          try {
+            r = await hostRpc('audioBuildTimeline', {
+              projectId: S.activeId, nodeId: n.id, style,
+              analysis: (live && live.data && live.data.analysis) || analysis,
+              ...(live && live.data && live.data.storyEdited && live.data.mvPackage && live.data.mvPackage.story ? { story: live.data.mvPackage.story } : {}),
+              ...(allowedDurations ? { allowedDurations } : {}),
+              progressId,
+            }, analysisOuterMaxMs());
+          } finally { stopPoll(); }
           if (r && r.package) {
             applyPkg(r.package);
+            update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.planPartial = ''; nd.data.planReasoning = ''; nd.data.analyzeProgress = ''; } });
             await cutSlices(r.package.scenes || [], 'scene');
           }
         } catch (e) {
           toast(String((e && e.message) || e));
         } finally { setBusy(''); }
       };
-      const startAnalyze = async () => {
+      const startAnalyze = async (resume) => {
         const liveNode = S.graph.nodes[n.id];
         if (!(liveNode && liveNode.data && liveNode.data.assetId)) { toast(T('tlNeedAudio')); return; }
         const cfg = resolveAudioModelCfg(loadSettings(), (liveNode.data && liveNode.data.audioModel) || '');
@@ -15194,12 +15340,24 @@ function queueThumb(assetId) {
           toast(msg);
           return;
         }
+        if (!resume) {
+          update((s) => {
+            const nd = s.graph.nodes[n.id];
+            if (!nd) return;
+            nd.data.analyzeParts = [];
+            nd.data.analyzeResume = 0;
+            nd.data.analyzeRetry = false;
+            nd.data.analyzePartial = '';
+            nd.data.analyzeReasoning = '';
+            nd.data.error = null;
+          });
+        }
         setBusy('analyze');
         try {
-          await genAudioNode(liveNode);
+          await genAudioNode(S.graph.nodes[n.id] || liveNode, { resume: !!resume });
         } catch (e) {
           const msg = String((e && e.message) || e);
-          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.error = msg; nd.data.analyzeProgress = ''; } });
+          update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.error = nd.data.error || msg; });
           toast(msg);
         } finally { setBusy(''); }
       };
@@ -15300,10 +15458,22 @@ function queueThumb(assetId) {
         setBusy('push');
         try {
           await flushSave();
-          await hostRpc('audioProduceMusicVideo', {
-            projectId: S.activeId, nodeId: n.id, keepPackage: true,
-            style: (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.styleText) || '',
+          const progressId = 'mv-' + n.id + '-' + Date.now();
+          const stopPoll = pollOmniProgress(progressId, (p) => {
+            update((s) => {
+              const nd = s.graph.nodes[n.id];
+              if (!nd) return;
+              if (p.text) nd.data.planPartial = p.text;
+              if (p.reasoning) nd.data.planReasoning = p.reasoning;
+            });
           });
+          try {
+            await hostRpc('audioProduceMusicVideo', {
+              projectId: S.activeId, nodeId: n.id, keepPackage: true,
+              style: (S.graph.nodes[n.id] && S.graph.nodes[n.id].data.styleText) || '',
+              progressId,
+            }, analysisOuterMaxMs());
+          } finally { stopPoll(); }
           const full = await hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() });
           mergeHostDoc(S.activeId, full, activeCanvasId());
           toast(T('tlPush'));
@@ -15570,7 +15740,7 @@ function queueThumb(assetId) {
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: pushCanvas }, T('tlPush')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy || !pkg, onClick: genAll }, T('tlGenAll')),
           mode === 'create' && url && !(an && an.sections) ? h('button', {
-            type: 'button', className: 'dshic-mtl-go', 'data-tl-analyze': '1', disabled: !!busy, onClick: startAnalyze,
+            type: 'button', className: 'dshic-mtl-go', 'data-tl-analyze': '1', disabled: !!busy, onClick: () => startAnalyze(false),
           }, busy === 'analyze' ? (n.data.analyzeProgress || T('tlAnalyzing')) : T('tlStartAnalyze')) : null,
           mode === 'create' && an && an.sections && !n.data.sectionsConfirmed ? h('button', {
             type: 'button', className: 'dshic-mtl-go', 'data-tl-confirm': '1', disabled: !!busy, onClick: confirmSections,
@@ -15590,7 +15760,12 @@ function queueThumb(assetId) {
           h('button', { type: 'button', className: 'dshic-mini', onClick: () => playRange(an.sections[sel].startSec, an.sections[sel].endSec) }, T('tlPlaySlice')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => editSections('split', { index: sel, timeSec: (Number(an.sections[sel].startSec) + Number(an.sections[sel].endSec)) / 2 }) }, T('tlSplit')),
           h('button', { type: 'button', className: 'dshic-mini', disabled: !!busy, onClick: () => editSections('merge', { index: sel }) }, T('tlMerge'))) : null,
-        n.data.error ? h('div', { className: 'dshic-err' }, n.data.error) : null,
+        (n.data.analyzeReasoning || n.data.analyzePartial || n.data.planReasoning || n.data.planPartial) ? h('div', { className: 'dshic-mtl-style' },
+          (n.data.analyzeReasoning || n.data.planReasoning) ? h('details', { className: 'dshic-mtl-think', open: true },
+            h('summary', null, T('caThinking')),
+            h('pre', null, n.data.analyzeReasoning || n.data.planReasoning)) : null,
+          (n.data.analyzePartial || n.data.planPartial) ? h('pre', { className: 'dshic-mtl-stream' }, n.data.analyzePartial || n.data.planPartial) : null) : null,
+        n.data.error ? h('div', { className: 'dshic-err' }, n.data.error, n.data.analyzeRetry ? h('button', { type: 'button', className: 'dshic-mini', onClick: () => startAnalyze(true) }, T('tlRetry')) : null) : null,
         scene ? h('div', { className: 'dshic-mtl-inspector' },
           h('span', null, T('tlStory')),
           h('textarea', { rows: 2, value: (shot && shot.visual) || '', onBlur: (e) => patchShot({ visual: e.target.value }) }),
@@ -20743,6 +20918,7 @@ const DIRECTOR_KEY_HELP = [
                 }, pr.label))) : null,
               h(Field, { key: 'u', label: T('baseUrl'), value: p[urlKey] || '', onChange: (v) => patchProvider(p.id, urlKey, v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).base || urlPh) : urlPh }),
               h(Field, { key: 'k', label: T('apiKey'), value: p.apiKey || '', onChange: (v) => patchProvider(p.id, 'apiKey', v), placeholder: kind === 'video' ? ((VIDEO_VENDORS[detectVideoVendor(p)] || {}).keyPh || 'sk-…') : 'sk-…', password: true }),
+              isAudio ? h(Field, { key: 'idle', label: T('audioIdle'), value: p.analysisIdleSec || '', placeholder: '90', tip: T('audioIdleHint'), onChange: (v) => patchProvider(p.id, 'analysisIdleSec', String(v).replace(/[^\d]/g, '')) }) : null,
               kind === 'image' ? [
                 h(Field, { key: 'size', label: T('imgSizeOverride'), value: p.size || '', onChange: (v) => patchProvider(p.id, 'size', v), placeholder: T('imgSizePlaceholder') }),
                 h(Field, { key: 'rf', label: T('imgResponseFormat'), value: p.responseFormat || '', onChange: (v) => patchProvider(p.id, 'responseFormat', v), placeholder: 'b64_json / url（留空=API 默认）' }),
@@ -22193,6 +22369,7 @@ const DIRECTOR_KEY_HELP = [
         h('div', { className: 'dshic-assist-chip', 'data-canvas-assistant-chip': '1' }, chip),
         h('div', { className: 'dshic-assist-log' },
           (S.assistantChat || []).map((msg, i) => h('div', { key: 'a' + i, className: 'dshic-assist-msg' + (msg.role === 'user' ? ' is-user' : '') },
+            msg.reasoning ? h('details', { className: 'dshic-mtl-think', open: !!msg.live }, h('summary', null, T('caThinking')), h('pre', null, msg.reasoning)) : null,
             msg.text || '',
             (msg.steps || []).map((step, j) => h('button', {
               key: 's' + j, type: 'button', className: 'dshic-assist-step',
@@ -22209,7 +22386,12 @@ const DIRECTOR_KEY_HELP = [
                   type: 'button', className: 'dshic-mini',
                   onClick: () => sendCanvasAssistant(T('tlAgentConfirm'), { confirmed: true, pending: msg.pending }),
                 }, T('tlAgentConfirm'))),
-              ) : null))),
+              ) : null,
+            msg.retryText ? h('button', { type: 'button', className: 'dshic-mini', onClick: () => sendCanvasAssistant(msg.retryText) }, T('tlRetry')) : null))),
+        S.assistantLive ? h('div', { className: 'dshic-assist-msg' },
+          S.assistantLive.reasoning ? h('details', { className: 'dshic-mtl-think', open: true }, h('summary', null, T('caThinking')), h('pre', null, S.assistantLive.reasoning)) : null,
+          S.assistantLive.text || '',
+          S.assistantLive.line ? h('div', { className: 'dshic-assist-chip' }, S.assistantLive.line) : null) : null,
         h('div', { className: 'dshic-assist-form' },
           h('input', {
             'data-canvas-assistant-input': '1', value: draft, placeholder: T('caPh'),
