@@ -418,6 +418,292 @@ export function runMvAssistantTurn({ message, state, modelText, confirmed }) {
   return { ok: true, say: action.say, executed: action.tool, needsConfirm: false, state: next };
 }
 
+/** 画布助手一轮里最多连续执行这么多步免费工具，避免模型死循环。 */
+export const CANVAS_ASSISTANT_MAX_STEPS = 4;
+
+/** 与 Host 已注册的 canvas_* 工具同名。画布助手只调度这些，不另起一套。 */
+export const CANVAS_TOOL_NAMES = [
+  'canvas_create_node',
+  'canvas_update_node',
+  'canvas_write_node',
+  'canvas_connect',
+  'canvas_delete_node',
+  'canvas_run_node',
+  'canvas_analyze_audio',
+  'canvas_music_timeline',
+  'canvas_music_timeline_edit',
+  'canvas_music_video',
+  'canvas_music_remix',
+  'canvas_relayout',
+];
+
+const CANVAS_TYPE_LABEL = {
+  image: '图片节点',
+  video: '视频节点',
+  audio: '音频节点',
+  text: '文本节点',
+  script: '剧本节点',
+  storyboard: '分镜节点',
+  finalcut: '成片节点',
+};
+
+export function nodeTypeLabel(type) {
+  return CANVAS_TYPE_LABEL[type] || (type ? String(type) + '节点' : '节点');
+}
+
+/** 给模型看的整张画布摘要：节点类型、关键状态、连线、当前选择。 */
+export function canvasDigest(graph, selection) {
+  const sel = new Set(selection || []);
+  const all = Object.values((graph && graph.nodes) || {}).filter(Boolean);
+  const nodes = all.slice(0, 60).map((n) => {
+    const d = n.data || {};
+    return {
+      id: n.id,
+      type: n.type,
+      label: String(d.label || '').slice(0, 40),
+      status: d.status || '',
+      hasAsset: !!(d.assetId || d.url),
+      duration: d.duration || d.durationSec || null,
+      count: d.count || null,
+      model: d.imageModel || d.videoModel || d.model || '',
+      prompt: String(d.prompt || d.idea || d.text || d.script || '').slice(0, 100),
+      selected: sel.has(n.id),
+    };
+  });
+  const edges = ((graph && graph.edges) || []).slice(0, 80).map((e) => ({
+    id: e.id, from: e.fromNode, to: e.toNode, fromPort: e.fromPort || '', toPort: e.toPort || '',
+  }));
+  return {
+    nodeCount: all.length,
+    nodes,
+    edges,
+    selection: nodes.filter((n) => n.selected),
+  };
+}
+
+export function canvasContextChip(digest, scopeId) {
+  const sel = (digest && digest.selection) || [];
+  const node = sel[0] || ((digest && digest.nodes) || []).find((n) => n.id === scopeId);
+  if (!node) return '';
+  return '当前：' + (node.label || node.id) + ' ' + nodeTypeLabel(node.type);
+}
+
+export function canvasToolSpecs() {
+  const fn = (name, description, properties, required) => ({
+    type: 'function',
+    function: {
+      name,
+      description,
+      parameters: { type: 'object', properties, required: required || [], additionalProperties: false },
+    },
+  });
+  return [
+    fn('canvas_create_node', '新建节点', { type: { type: 'string' }, name: { type: 'string' }, prompt: { type: 'string' } }, ['type']),
+    fn('canvas_update_node', '修改已有节点的提示词或正文', { nodeId: { type: 'string' }, patch: { type: 'object' } }, ['nodeId', 'patch']),
+    fn('canvas_write_node', '把正文写进文本、剧本或分镜节点', { nodeId: { type: 'string' }, text: { type: 'string' } }, ['nodeId', 'text']),
+    fn('canvas_connect', '连接两个节点', { fromNode: { type: 'string' }, toNode: { type: 'string' } }, ['fromNode', 'toNode']),
+    fn('canvas_delete_node', '删除节点。调用前必须先让用户确认。', { nodeId: { type: 'string' } }, ['nodeId']),
+    fn('canvas_run_node', '运行节点。图片、视频、成片会花钱，调用前必须先让用户确认。', { nodeId: { type: 'string' } }, ['nodeId']),
+    fn('canvas_analyze_audio', '用音频理解分析歌曲', { nodeId: { type: 'string' } }, ['nodeId']),
+    fn('canvas_music_timeline', '按分析结果铺 MV 时间轴', { nodeId: { type: 'string' }, style: { type: 'string' } }, ['nodeId']),
+    fn('canvas_music_timeline_edit', '修改时间轴上的一场', { nodeId: { type: 'string' }, sceneIndex: { type: 'number' }, complaint: { type: 'string' } }, ['nodeId']),
+    fn('canvas_music_video', '把音乐时间轴推到画布', { nodeId: { type: 'string' } }, ['nodeId']),
+    fn('canvas_music_remix', '按复刻/角色替换铺时间轴，不直接生成视频', { nodeId: { type: 'string' }, style: { type: 'string' } }, ['nodeId']),
+    fn('canvas_relayout', '重新排列画布节点', {}),
+  ];
+}
+
+export function canvasAssistantSystem() {
+  return [
+    '你是这张无限画布的助手，负责整张画布，而不是某一个节点里的面板。',
+    '你可以操作文本、剧本、分镜、图片、视频、音频和成片节点。',
+    '用户说「这个」或 this 时，指的是摘要里 selected 为 true 的节点。',
+    '新建、改字、连线、分析歌曲、铺时间轴、推到画布可以直接做。',
+    '生成图片、生成视频、成片合成、删除节点必须先停下来等用户确认，不要连续调用。',
+    '一次只调用一个工具。没有工具要调用时，用一句中文回答。',
+  ].join('\n');
+}
+
+function digestNode(digest, id) {
+  return ((digest && digest.nodes) || []).find((n) => n.id === id) || null;
+}
+
+export function canvasActionCost(name, args, digest) {
+  if (name === 'canvas_delete_node') return { spends: false, destructive: true };
+  if (name === 'canvas_run_node') {
+    const id = args && (args.nodeId || args.id);
+    const node = digestNode(digest, id) || ((digest && digest.selection) || [])[0] || null;
+    const type = node && node.type;
+    if (type === 'audio' || type === 'text' || type === 'script' || type === 'storyboard') {
+      return { spends: false, destructive: false, type };
+    }
+    return { spends: true, destructive: false, type: type || '' };
+  }
+  return { spends: false, destructive: false };
+}
+
+export function canvasSpendPreview(digest, action, modelLabel) {
+  const id = action && action.args && action.args.nodeId;
+  const node = digestNode(digest, id) || ((digest && digest.selection) || [])[0] || null;
+  const type = (action && action.type) || (node && node.type) || '';
+  const model = (node && node.model) || modelLabel || '';
+  if (action && action.destructive) return { kind: 'delete', count: 1, nodeId: id || (node && node.id) || '' };
+  if (type === 'image') return { kind: 'image', count: Number(node && node.count) || 1, model };
+  if (type === 'video') return { kind: 'video', count: 1, seconds: node && node.duration, model };
+  if (type === 'finalcut' || type === '') return { kind: type === 'finalcut' ? 'compose' : 'run', count: 1, seconds: node && node.duration, model };
+  return { kind: 'run', count: 1, model };
+}
+
+export function canvasPreviewLine(preview) {
+  const p = preview || {};
+  if (p.kind === 'delete') return '将删除 ' + (p.count || 1) + ' 个节点';
+  if (p.kind === 'compose') return '将合成成片' + (p.model ? ' · ' + p.model : '');
+  if (p.kind === 'image') return '将生成图片 ' + (p.count || 1) + ' 张' + (p.model ? ' · ' + p.model : '');
+  if (p.kind === 'video') return '将生成视频 ' + (p.count || 1) + ' 条 · ' + (p.seconds || '?') + 's' + (p.model ? ' · ' + p.model : '');
+  return '需要确认后才会执行';
+}
+
+export function gateCanvasAction(action, opts) {
+  if (!action || !action.tool) return { allow: true, say: (action && action.say) || '' };
+  const digest = opts && opts.digest;
+  const cost = canvasActionCost(action.tool, action.args, digest);
+  action.spends = cost.spends;
+  action.destructive = cost.destructive;
+  if ((cost.spends || cost.destructive) && !(opts && opts.confirmed)) {
+    const preview = canvasSpendPreview(digest, { ...action, ...cost }, opts && opts.modelLabel);
+    return { allow: false, say: canvasPreviewLine(preview), preview };
+  }
+  return { allow: true, say: action.say || '' };
+}
+
+/** 从非流式 JSON 或 SSE 增量里收集 OpenAI tool_calls。 */
+export function extractToolCalls(raw) {
+  const text = String(raw || '');
+  const calls = [];
+  const push = (name, argsText, id) => {
+    if (!name) return;
+    let args = {};
+    if (argsText && typeof argsText === 'object') args = argsText;
+    else {
+      try { args = JSON.parse(argsText || '{}'); } catch { args = {}; }
+    }
+    calls.push({ name: String(name), args, id: id || '' });
+  };
+  try {
+    const j = JSON.parse(text);
+    const tc = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.tool_calls;
+    if (Array.isArray(tc) && tc.length) {
+      for (const t of tc) push(t.function && t.function.name, t.function && t.function.arguments, t.id);
+      return calls;
+    }
+  } catch { /* 流式文本 */ }
+  const acc = {};
+  for (const line of text.split('\n')) {
+    const s = line.trim().replace(/^data:\s*/, '');
+    if (!s || s === '[DONE]' || s[0] !== '{') continue;
+    let j = null;
+    try { j = JSON.parse(s); } catch { continue; }
+    const delta = j.choices && j.choices[0] && (j.choices[0].delta || j.choices[0].message);
+    const tcs = delta && delta.tool_calls;
+    if (!Array.isArray(tcs)) continue;
+    for (const t of tcs) {
+      const i = t.index == null ? 0 : t.index;
+      acc[i] = acc[i] || { name: '', args: '', id: '' };
+      if (t.id) acc[i].id = t.id;
+      if (t.function && t.function.name) acc[i].name += t.function.name;
+      if (t.function && t.function.arguments) acc[i].args += t.function.arguments;
+    }
+  }
+  for (const t of Object.values(acc)) push(t.name, t.args, t.id);
+  return calls;
+}
+
+export function parseCanvasAction(text) {
+  const calls = extractToolCalls(text).filter((c) => CANVAS_TOOL_NAMES.includes(c.name));
+  if (calls.length) return { tool: calls[0].name, args: calls[0].args || {}, say: '', native: true };
+  const m = String(text || '').match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(m[0]);
+    const tool = String(o.tool || o.name || '');
+    if (!CANVAS_TOOL_NAMES.includes(tool)) return null;
+    const args = (o.args && typeof o.args === 'object') ? o.args : {};
+    return { tool, args, say: String(o.say || ''), native: false };
+  } catch { return null; }
+}
+
+function selectedOrScope(digest, scopeId) {
+  const sel = (digest && digest.selection) || [];
+  if (sel.length) return sel[0];
+  return ((digest && digest.nodes) || []).find((n) => n.id === scopeId) || null;
+}
+
+function audioNode(digest, scopeId) {
+  const target = selectedOrScope(digest, scopeId);
+  if (target && target.type === 'audio') return target;
+  return ((digest && digest.nodes) || []).find((n) => n.type === 'audio') || null;
+}
+
+/** 模型没有给出工具时的直白指令。选中节点就是「这个」。 */
+export function keywordCanvasAction(message, digest, scopeId) {
+  const text = String(message || '');
+  const target = selectedOrScope(digest, scopeId);
+  if (/删除|删掉|delete/i.test(text)) {
+    if (!target) return { tool: '', say: '先选中要删除的节点。' };
+    return { tool: 'canvas_delete_node', args: { nodeId: target.id }, say: '准备删除这个节点。' };
+  }
+  if (/复刻|替换角色|remix/i.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    if (!audio) return { tool: '', say: '先放上或选中一个音频节点。' };
+    return { tool: 'canvas_music_remix', args: { nodeId: audio.id, style: text.slice(0, 200) }, say: '按复刻铺时间轴，先不生成视频。' };
+  }
+  if (/分析|听歌|analyze/i.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    if (!audio) return { tool: '', say: '画布上还没有音频节点。' };
+    return { tool: 'canvas_analyze_audio', args: { nodeId: audio.id }, say: '开始分析这首歌。' };
+  }
+  if (/时间轴|timeline/i.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    if (!audio) return { tool: '', say: '先选中或放上音频节点。' };
+    return { tool: 'canvas_music_timeline', args: { nodeId: audio.id, style: text.slice(0, 200) }, say: '按这首歌铺时间轴。' };
+  }
+  if (/推到画布|铺到画布/.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    if (!audio) return { tool: '', say: '先选中音频节点。' };
+    return { tool: 'canvas_music_video', args: { nodeId: audio.id }, say: '把时间轴推到画布。' };
+  }
+  if (/生成|出图|出视频|合成|compose|generate/i.test(text)) {
+    if (!target) return { tool: '', say: '先选中要运行的节点。' };
+    return { tool: 'canvas_run_node', args: { nodeId: target.id }, say: '准备运行这个节点。' };
+  }
+  if (/改提示词|改成|写成|改为/.test(text)) {
+    if (!target) return { tool: '', say: '先选中要改的节点。' };
+    const prompt = text.replace(/^[\s\S]*?(改成|写成|改为)/, '').trim() || text;
+    const field = target.type === 'text' ? 'text' : target.type === 'script' ? 'script' : 'prompt';
+    const patch = {};
+    patch[field] = prompt;
+    return { tool: 'canvas_update_node', args: { nodeId: target.id, patch }, say: '已改这个节点。' };
+  }
+  if (/新建|创建|加一个|加个/.test(text)) {
+    const type = /视频/.test(text) ? 'video'
+      : /图片/.test(text) ? 'image'
+        : /剧本/.test(text) ? 'script'
+          : /分镜/.test(text) ? 'storyboard'
+            : /文本/.test(text) ? 'text'
+              : /成片/.test(text) ? 'finalcut'
+                : /音频|音乐/.test(text) ? 'audio'
+                  : '';
+    if (!type) return { tool: '', say: '说一下要新建哪种节点。' };
+    return { tool: 'canvas_create_node', args: { type }, say: '新建一个' + nodeTypeLabel(type) + '。' };
+  }
+  if (/连接|连线/.test(text)) {
+    const sel = (digest && digest.selection) || [];
+    if (sel.length < 2) return { tool: '', say: '选中两个节点再让我连线。' };
+    return { tool: 'canvas_connect', args: { fromNode: sel[0].id, toNode: sel[1].id }, say: '把选中的节点连起来。' };
+  }
+  return null;
+}
+
 /** 帧差序列 → 切点（秒）。阈值用相邻帧平均绝对差，间隔至少 0.8 秒。 */
 export function cutsFromDiffs(diffs, hopSec, threshold) {
   const hop = Math.max(0.05, num(hopSec, 0.5));
@@ -1321,7 +1607,7 @@ export function mockAnalysis(durationSec, extraWarnings) {
   }, { source: 'local-fallback', method: 'mock', model: null, durationSec: dur, warnings });
 }
 
-export async function callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs }) {
+export async function callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs, returnMeta }) {
   const fetchFn = fetchImpl || globalThis.fetch;
   if (typeof fetchFn !== 'function') throw new Error('当前环境没有 fetch，无法调用音频理解模型');
   const url = chatCompletionsUrl(baseUrl);
@@ -1347,7 +1633,9 @@ export async function callOmni({ baseUrl, apiKey, body, fetchImpl, timeoutMs }) 
     err.status = res.status;
     throw err;
   }
-  return parseOmniResponse(text);
+  const parsed = parseOmniResponse(text);
+  if (returnMeta) return { text: parsed, raw: text, toolCalls: extractToolCalls(text) };
+  return parsed;
 }
 
 export function buildFrameDescribeBody({ model, imageDataUrl }) {

@@ -380,6 +380,77 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(!/无文字/.test(AD.presentImagePrompt('角色，无文字')), '可见提示词没有去掉无文字');
 }
 
+// ---------- 画布助手：跨节点调度与确认门 ----------
+{
+  const graph = {
+    nodes: {
+      t1: { id: 't1', type: 'text', data: { label: '旁白', text: '旧' } },
+      s1: { id: 's1', type: 'script', data: { label: '剧本' } },
+      b1: { id: 'b1', type: 'storyboard', data: { label: '分镜' } },
+      i1: { id: 'i1', type: 'image', data: { label: '角色甲', prompt: '白天', imageModel: 'img-a', count: 2 } },
+      v1: { id: 'v1', type: 'video', data: { label: '镜头', duration: 6, videoModel: 'vid-a' } },
+      a1: { id: 'a1', type: 'audio', data: { label: '歌' } },
+      f1: { id: 'f1', type: 'finalcut', data: { label: '成片' } },
+    },
+    edges: [{ id: 'e1', fromNode: 't1', toNode: 'i1', fromPort: 'out', toPort: 'prompt' }],
+  };
+  const digest = AD.canvasDigest(graph, ['i1']);
+  ok(digest.selection.length === 1 && digest.selection[0].id === 'i1', '摘要没有标出选中节点');
+  ok(digest.edges[0] && digest.edges[0].from === 't1' && digest.edges[0].to === 'i1', '摘要没有连线');
+  ok(AD.canvasContextChip(digest) === '当前：角色甲 图片节点', '上下文条没有写成选中节点：' + AD.canvasContextChip(digest));
+  ok(AD.keywordCanvasAction('新建一个文本节点', digest).args.type === 'text', '没有调度文本节点');
+  ok(AD.keywordCanvasAction('新建一个剧本节点', digest).args.type === 'script', '没有调度剧本节点');
+  ok(AD.keywordCanvasAction('新建一个分镜节点', digest).args.type === 'storyboard', '没有调度分镜节点');
+  ok(AD.keywordCanvasAction('新建一个图片节点', digest).args.type === 'image', '没有调度图片节点');
+  ok(AD.keywordCanvasAction('新建一个视频节点', digest).args.type === 'video', '没有调度视频节点');
+  ok(AD.keywordCanvasAction('新建一个音频节点', digest).args.type === 'audio', '没有调度音频节点');
+  ok(AD.keywordCanvasAction('新建一个成片节点', digest).args.type === 'finalcut', '没有调度成片节点');
+  const edit = AD.keywordCanvasAction('把这个提示词改成夜景', digest);
+  ok(edit.tool === 'canvas_update_node' && edit.args.nodeId === 'i1' && edit.args.patch.prompt === '夜景', '这个没有指到选中的图片');
+  ok(AD.gateCanvasAction(edit, { digest }).allow === true, '改提示词被误拦');
+  const gen = AD.keywordCanvasAction('生成这个', digest);
+  const blocked = AD.gateCanvasAction(gen, { digest, modelLabel: 'fallback' });
+  ok(gen.tool === 'canvas_run_node' && gen.args.nodeId === 'i1', '生成这个没有打到选中图片');
+  ok(blocked.allow === false && blocked.preview.kind === 'image' && blocked.preview.count === 2 && blocked.preview.model === 'img-a', '图片生成确认卡不对：' + JSON.stringify(blocked.preview));
+  ok(AD.gateCanvasAction(gen, { digest, confirmed: true }).allow === true, '确认后图片生成仍被拦住');
+  const vdigest = AD.canvasDigest(graph, ['v1']);
+  const vgate = AD.gateCanvasAction(AD.keywordCanvasAction('出视频', vdigest), { digest: vdigest });
+  ok(vgate.allow === false && vgate.preview.kind === 'video' && vgate.preview.seconds === 6 && vgate.preview.model === 'vid-a', '视频生成没有给出秒数和模型');
+  const fdigest = AD.canvasDigest(graph, ['f1']);
+  const cgate = AD.gateCanvasAction(AD.keywordCanvasAction('合成成片', fdigest), { digest: fdigest });
+  ok(cgate.allow === false && cgate.preview.kind === 'compose', '成片合成没有确认');
+  const dgate = AD.gateCanvasAction(AD.keywordCanvasAction('删除这个', vdigest), { digest: vdigest });
+  ok(dgate.allow === false && dgate.preview.kind === 'delete', '删除节点没有确认');
+  ok(AD.gateCanvasAction({ tool: 'canvas_delete_node', args: { nodeId: 'v1' } }, { digest: vdigest, confirmed: true }).allow === true, '确认后删除仍被拦住');
+  const adigest = AD.canvasDigest(graph, ['a1']);
+  const analyze = AD.keywordCanvasAction('分析这首歌', adigest);
+  ok(analyze.tool === 'canvas_analyze_audio' && analyze.args.nodeId === 'a1' && AD.gateCanvasAction(analyze, { digest: adigest }).allow === true, '分析歌曲没有直接执行');
+  ok(AD.keywordCanvasAction('生成时间轴', adigest).tool === 'canvas_music_timeline', '没有调度音乐时间轴');
+  ok(AD.keywordCanvasAction('推到画布', adigest).tool === 'canvas_music_video', '没有调度推到画布');
+  ok(AD.keywordCanvasAction('按复刻替换角色', adigest).tool === 'canvas_music_remix', '没有调度复刻');
+  const link = AD.keywordCanvasAction('把这两个连线', AD.canvasDigest(graph, ['t1', 'i1']));
+  ok(link.tool === 'canvas_connect' && link.args.fromNode === 't1' && link.args.toNode === 'i1' && AD.gateCanvasAction(link, { digest }).allow === true, '连线没有直接执行');
+  ok(AD.gateCanvasAction({ tool: 'canvas_write_node', args: { nodeId: 's1', text: '第一场' } }, { digest }).allow === true, '写剧本被误拦');
+  const sse = [
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"canvas_create_node","arguments":""}}]}}]}',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"type\\":\\"script\\"}"}}]}}]}',
+  ].join('\n');
+  const native = AD.parseCanvasAction(sse);
+  ok(native && native.native === true && native.tool === 'canvas_create_node' && native.args.type === 'script', '没有解析原生工具调用');
+  const jsonAct = AD.parseCanvasAction('{"say":"改","tool":"canvas_update_node","args":{"nodeId":"t1","patch":{"text":"夜"}}}');
+  ok(jsonAct && jsonAct.native === false && jsonAct.args.patch.text === '夜', 'JSON 一步协议没有解析');
+  ok(AD.CANVAS_ASSISTANT_MAX_STEPS === 4, '步数上限不是 4');
+  const host = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  const fn = host.slice(host.indexOf('async canvasAssistantTurn'), host.indexOf('async audioPlanStoryboard'));
+  ok(fn.includes('dispatchCanvasAssistant') && !fn.includes('canvasCreateNode'), '画布助手没有复用已有工具函数');
+  ok(fn.includes('callOmni') && fn.includes('CANVAS_ASSISTANT_MAX_STEPS'), '画布助手没有走全模态或多步上限');
+  ok(!/await complete\(/.test(fn.slice(0, fn.indexOf('} else if (step === 0)'))), '配了全模态时画布助手仍调用 Harness');
+  const clientSrc2 = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+  const audioBody = clientSrc2.slice(clientSrc2.indexOf('function AudioNodeBody'), clientSrc2.indexOf('function nodeBody'));
+  ok(!audioBody.includes('data-tl-agent-panel') && audioBody.includes('s.assistantOpen = true'), '音乐节点仍留着第二套助手');
+  ok(clientSrc2.includes("data-canvas-assistant': 'open'") && clientSrc2.includes('canvasAssistantTurn'), '画布上没有全局助手');
+}
+
 // ---------- 对话工具：分析 → 分镜 → 成片声轨 ----------
 {
   const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ic-audio-'));

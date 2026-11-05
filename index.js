@@ -48,6 +48,13 @@ import {
   buildOmniTextBody,
   explainModelError,
   callOmni,
+  CANVAS_ASSISTANT_MAX_STEPS,
+  canvasDigest,
+  canvasAssistantSystem,
+  canvasToolSpecs,
+  parseCanvasAction,
+  keywordCanvasAction,
+  gateCanvasAction,
   IMAGE_SEND_SUFFIX,
   groupShotsForClips,
   analysisDigest,
@@ -1739,6 +1746,9 @@ async function projectsPut(args) {
     out.skillProfile = prev.skillProfile;
     out.skillUpdatedAt = prev.skillUpdatedAt || 0;
   }
+  // 画布助手的对话挂在这份画布文档上。客户端推送带了就用新的，没带就保留上一份，避免 450ms 全量保存把记录抹掉。
+  if (Array.isArray(doc.assistantChat)) out.assistantChat = doc.assistantChat.slice(-40);
+  else if (Array.isArray(prev.assistantChat)) out.assistantChat = prev.assistantChat;
   // 设定集有更新时重算全部分镜表的一致性告警（客户端侧设定集编辑也走这条路径）
   const bibleForWarn = canvasId ? (canvasBible && canvasBible.bible) : out.bible;
   if (bibleForWarn !== undefined) {
@@ -4138,6 +4148,23 @@ export function apply(ctx) {
       return { text, model: route.model, provider: 'omni' };
     }
 
+    async function dispatchCanvasAssistant(name, args) {
+      const a = { ...(args || {}) };
+      if (name === 'canvas_create_node') return canvasCreateNode(a);
+      if (name === 'canvas_update_node') return canvasUpdateNode(a);
+      if (name === 'canvas_write_node') return canvasWriteNode(a);
+      if (name === 'canvas_connect') return canvasConnect(a);
+      if (name === 'canvas_delete_node') return canvasDeleteNode(a);
+      if (name === 'canvas_run_node') return canvasRunNode(a);
+      if (name === 'canvas_analyze_audio') return canvasAnalyzeAudio(a);
+      if (name === 'canvas_music_timeline') return canvasMusicTimeline(a, (req) => completeMvText(req));
+      if (name === 'canvas_music_timeline_edit') return canvasMusicTimelineEdit(a);
+      if (name === 'canvas_music_video') return canvasMusicVideo(a, (req) => completeMvText(req));
+      if (name === 'canvas_music_remix') return canvasMusicRemix(a);
+      if (name === 'canvas_relayout') return canvasRelayout(a);
+      throw new Error('未知工具 ' + name);
+    }
+
     const methods = {
       async ping() { return { ok: true, version: VERSION }; },
       async llmOptions() { return listLlmOptions(); },
@@ -4731,6 +4758,169 @@ export function apply(ctx) {
           sectionsConfirmed: !!audio.data.sectionsConfirmed,
           analysis: audio.data.analysis || null,
           package: audio.data.mvPackage || null,
+        };
+      },
+      async canvasAssistantTurn(args) {
+        const doc = readToolDoc(args);
+        const selection = Array.isArray(args && args.selection) ? args.selection.map(String) : [];
+        const digest = canvasDigest({ nodes: doc.nodes, edges: doc.edges }, selection);
+        const passed = args && args.provider;
+        const saved = audioProviderFromConfig((args && args.audioModel) || '');
+        const provider = (passed && passed.model && passed.baseUrl && passed.apiKey) ? passed : saved;
+        const route = assistantPlannerRoute(provider);
+        const userMsg = String((args && args.message) || '').slice(0, 2000);
+        const confirmed = !!(args && args.confirmed);
+        const history = Array.isArray(doc.assistantChat) ? doc.assistantChat.slice(-30) : [];
+        const steps = [];
+        let say = '';
+        let blocked = null;
+        let modelError = '';
+        let modelDetail = '';
+        const scopeId = String((args && args.scopeId) || '');
+        const runOne = async (action) => {
+          const result = await dispatchCanvasAssistant(action.tool, {
+            ...(action.args || {}),
+            projectId: args && args.projectId,
+            canvasId: toolCanvasId(args),
+          });
+          const nodeId = (action.args && (action.args.nodeId || action.args.fromNode)) || (result && result.nodeId) || '';
+          steps.push({
+            tool: action.tool,
+            nodeId,
+            label: (result && (result.label || result.text)) || '',
+            ok: true,
+          });
+          return result;
+        };
+        if (confirmed && args && args.pending && args.pending.tool) {
+          const pending = args.pending;
+          const gate = gateCanvasAction(pending, { confirmed: true, digest, modelLabel: route.label });
+          if (gate.allow) {
+            try {
+              await runOne(pending);
+              say = pending.say || '已执行。';
+            } catch (e) {
+              say = '执行失败：' + String((e && e.message) || e);
+            }
+          }
+        } else {
+          const done = [];
+          for (let step = 0; step < CANVAS_ASSISTANT_MAX_STEPS; step++) {
+            let modelText = '';
+            let raw = '';
+            let native = false;
+            if (route.route === 'omni') {
+              const system = canvasAssistantSystem() + '\n画布摘要：' + JSON.stringify(digest).slice(0, 6000);
+              const user = userMsg + (done.length ? '\n已执行：' + JSON.stringify(done).slice(0, 1500) : '');
+              let extra = null;
+              try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
+              try {
+                const body = buildOmniTextBody({ model: route.model, system, user, extra });
+                body.tools = canvasToolSpecs();
+                body.tool_choice = 'auto';
+                const turn = await callOmni({ baseUrl: route.baseUrl, apiKey: provider.apiKey, body, returnMeta: true });
+                modelText = (turn && turn.text) || '';
+                raw = (turn && turn.raw) || '';
+                native = true;
+              } catch (e) {
+                const msg = String((e && e.message) || e);
+                if (/HTTP 400/.test(msg) && /tool/i.test(msg)) {
+                  try {
+                    const body = buildOmniTextBody({
+                      model: route.model,
+                      system,
+                      user: user + '\n只回复一个 JSON：{"say":"","tool":"","args":{}}。tool 必须是已有 canvas_ 工具名，没有动作时留空。',
+                      extra,
+                    });
+                    const turn = await callOmni({ baseUrl: route.baseUrl, apiKey: provider.apiKey, body, returnMeta: true });
+                    modelText = (turn && turn.text) || '';
+                    raw = (turn && turn.raw) || '';
+                    native = false;
+                  } catch (e2) {
+                    const explained = explainModelError(String((e2 && e2.message) || e2), route);
+                    modelError = explained.brief;
+                    modelDetail = explained.detail;
+                    break;
+                  }
+                } else {
+                  const explained = explainModelError(msg, route);
+                  modelError = explained.brief;
+                  modelDetail = explained.detail;
+                  break;
+                }
+              }
+            } else if (step === 0) {
+              try {
+                const r = await complete({
+                  system: canvasAssistantSystem(),
+                  user: userMsg + '\n画布摘要：' + JSON.stringify(digest).slice(0, 4000)
+                    + '\n只回复一个 JSON：{"say":"","tool":"","args":{}}。tool 必须是已有 canvas_ 工具名，没有动作时留空。',
+                });
+                modelText = (r && r.text) || '';
+              } catch (e) {
+                const explained = explainModelError(String((e && e.message) || e), route);
+                modelError = explained.brief;
+                modelDetail = explained.detail;
+              }
+            }
+            let action = parseCanvasAction(raw) || parseCanvasAction(modelText);
+            if (!action && step === 0) action = keywordCanvasAction(userMsg, digest, scopeId);
+            if (!action || !action.tool) {
+              say = (action && action.say) || modelText || modelError || '可以说要新建、修改、连线、生成，或把一首歌做成 MV。';
+              break;
+            }
+            const gate = gateCanvasAction(action, { confirmed: false, digest, modelLabel: route.label });
+            if (!gate.allow) {
+              blocked = { tool: action.tool, args: action.args || {}, say: gate.say, preview: gate.preview || null };
+              say = gate.say;
+              break;
+            }
+            try {
+              await runOne(action);
+              done.push({ tool: action.tool, ok: true });
+              say = action.say || ('已执行 ' + action.tool);
+              if (!native || !action.native) break;
+            } catch (e) {
+              say = '执行失败：' + String((e && e.message) || e);
+              steps.push({ tool: action.tool, ok: false, error: String((e && e.message) || e) });
+              break;
+            }
+          }
+          if (steps.length >= CANVAS_ASSISTANT_MAX_STEPS && !blocked) {
+            say = (say ? say + '\n' : '') + '这一轮已执行 ' + CANVAS_ASSISTANT_MAX_STEPS + ' 步，停下来等你下一步。';
+          }
+          if (!say && modelError) say = modelError;
+        }
+        const fresh = readToolDoc(args);
+        const chat = history.concat([
+          { role: 'user', text: userMsg, at: Date.now() },
+          {
+            role: 'assistant',
+            text: say,
+            steps,
+            needsConfirm: !!blocked,
+            pending: blocked,
+            preview: blocked && blocked.preview,
+            modelError,
+            modelDetail,
+            modelLabel: route.label,
+            at: Date.now(),
+          },
+        ]).filter((m) => m && (m.text || (m.steps && m.steps.length))).slice(-40);
+        fresh.assistantChat = chat;
+        writeToolDoc(args, fresh);
+        return {
+          ok: true,
+          say,
+          steps,
+          needsConfirm: !!blocked,
+          pending: blocked,
+          preview: blocked && blocked.preview,
+          modelError,
+          modelDetail,
+          modelLabel: route.label,
+          planner: route.route,
+          chat,
         };
       },
       async audioPlanStoryboard(args) {
