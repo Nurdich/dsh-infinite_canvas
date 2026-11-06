@@ -25,6 +25,7 @@ import {
   stampGeneration,
   snapGenerationDuration,
   mvWirePlan,
+  planRefRepair,
   adaptGenAttempt,
   mergeCreative,
   analysisIsThin,
@@ -3176,6 +3177,14 @@ function connectEdge(doc, fromId, toId, fromPort, toPort) {
   doc.edges.push(edge);
   return edge;
 }
+/** 分镜首帧只在别人已经占着 frame 口时才改接到 ref。重复修复不能把自己的首帧再拉成一条参考线。 */
+function connectMvImageLink(doc, fromNode, toNode, toPort) {
+  if (toPort === 'frame') {
+    const owner = (doc.edges || []).find((e) => e && e.toNode === toNode.id && e.toPort === 'frame');
+    if (owner && owner.fromNode !== fromNode.id) return connectEdge(doc, fromNode.id, toNode.id, 'out', 'ref');
+  }
+  return connectEdge(doc, fromNode.id, toNode.id, 'out', toPort);
+}
 /** 在两个节点间连线（画布工作流的关键：剧本→分镜→图→视频靠连线组织，不要复制文本）。 */
 function canvasConnect(args) {
   const id = String((args && args.projectId) || '');
@@ -3737,14 +3746,7 @@ function layMusicVideo(doc, audio, pkg) {
     const fromNode = link.fromName ? findRef(link.fromRole, link.fromName) : findKey(link.fromKey);
     const toNode = findKey(link.toKey);
     if (!fromNode || !toNode) continue;
-    if (link.toPort === 'frame') {
-      const already = (doc.edges || []).some((e) => e.toNode === toNode.id && e.toPort === 'frame');
-      if (already) {
-        connectEdge(doc, fromNode.id, toNode.id, 'out', 'ref');
-        continue;
-      }
-    }
-    connectEdge(doc, fromNode.id, toNode.id, 'out', link.toPort);
+    connectMvImageLink(doc, fromNode, toNode, link.toPort);
   }
   const cut = upsertMvNode(doc, 'mv:' + from + ':cut', 'finalcut', 'MV 成片', {
     mvFrom: from, status: 'idle', resolution: '720P', ratio: '16:9', transition: 'none',
@@ -4688,6 +4690,56 @@ export function apply(ctx) {
           } catch { rewrittenPrompt = ''; }
         }
         return { ok: true, plan: adaptGenAttempt({ message, status: a.status, params: a.params, history: a.history, rewrittenPrompt }) };
+      },
+      /** 给已有 MV 补角色/场景图节点和参考连线。不重跑听歌，不清已有图片和手改提示词。 */
+      async mvRepairRefs(args) {
+        const doc = readToolDoc(args);
+        const audio = findTypedNode(doc, args && args.nodeId, 'audio');
+        if (!audio || !audio.data || !audio.data.mvPackage) throw new Error('这个音频节点还没有 MV 计划，无法补角色图');
+        const plan = planRefRepair(audio.data.mvPackage, doc.nodes, audio.id);
+        let created = 0;
+        let adopted = 0;
+        for (const act of plan.actions) {
+          if (act.op === 'adopt') {
+            const n = doc.nodes[act.nodeId];
+            if (!n) continue;
+            n.data = { ...(n.data || {}), ...act.patch };
+            adopted += 1;
+          } else {
+            const existing = Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === act.mvKey);
+            if (existing) {
+              existing.data = {
+                ...(existing.data || {}),
+                mvFrom: audio.id, mvRole: act.role, refName: act.name,
+                ...(String(existing.data.prompt || '').trim() ? {} : { prompt: act.prompt }),
+              };
+              adopted += 1;
+            } else {
+              upsertMvNode(doc, act.mvKey, 'image', act.name, {
+                mvFrom: audio.id, mvRole: act.role, refName: act.name, prompt: act.prompt,
+                imageSuffix: (audio.data.mvPackage && audio.data.mvPackage.imageSuffix) || '',
+                ratio: '16:9', size: '2K', imageCount: 1,
+              });
+              created += 1;
+            }
+          }
+        }
+        const findKey = (key) => Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvKey === 'mv:' + audio.id + ':' + key);
+        const findRef = (role, name) => Object.values(doc.nodes || {}).find((n) => n && n.data && n.data.mvFrom === audio.id && n.data.mvRole === role && n.data.refName === name);
+        let wired = 0;
+        for (const link of mvWirePlan(audio.data.mvPackage)) {
+          const fromNode = link.fromName ? findRef(link.fromRole, link.fromName) : findKey(link.fromKey);
+          const toNode = findKey(link.toKey);
+          if (!fromNode || !toNode) continue;
+          connectMvImageLink(doc, fromNode, toNode, link.toPort);
+          wired += 1;
+        }
+        doc.updatedAt = Date.now();
+        writeToolDoc(args, doc);
+        return {
+          ok: true, created, adopted, wired,
+          text: '已补上角色/场景参考图：新建 ' + created + ' 张，认领已有 ' + adopted + ' 张，连线 ' + wired + ' 条。没有重跑听歌。',
+        };
       },
       async audioRemix(args) {
         return canvasMusicRemix(args || {});
