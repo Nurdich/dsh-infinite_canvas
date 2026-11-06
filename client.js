@@ -6312,7 +6312,11 @@ function queueThumb(assetId) {
       if (refs.length) {
         const imgs = [];
         for (const b of refs) imgs.push(await blobToDataUrlScaled(b.blob || b));
-        body.image = imgs;
+        const payload = imageRefPayload(imgs, 'generations');
+        if (payload.state !== 'sent' || payload.field !== 'image' || !payload.image || payload.image.length !== imgs.length) {
+          throw new Error('参考图没有放进图片请求');
+        }
+        body.image = payload.image.slice();
       }
       // 响应格式：留空 = 用 API 默认（响应解析同时支持 b64_json 与 url）
       if (String(s.responseFormat || '').trim()) body.response_format = String(s.responseFormat).trim();
@@ -7699,17 +7703,20 @@ function queueThumb(assetId) {
       let vendorDowngraded = false; // IC-03：识别到厂商但无适配器 → 降级走 OpenAI 兼容通用链（节点上可见）
       // 参考素材上限检查：超出即告警（截断发生在各 runner 内，这里先把事实说清楚）。
       // 未知厂商兜底 8 = IC-03 降级后的 OpenAI 兼容链实际发送上限。
-      if (o.warn) {
-        const caps = VIDEO_REF_CAPS[vendor] || { img: 8 };
-        const refCount = o.hardFrame ? 0 : (Array.isArray(o.refs) ? o.refs.length : 0);
-        if (refCount > (caps.img || 0)) {
-          o.warn(caps.img
-            ? ('参考图 ' + refCount + ' 张超过该厂商上限 ' + caps.img + ' 张，本次只使用前 ' + caps.img + ' 张')
-            : ('该厂商不支持实体参考图，本次将忽略 ' + refCount + ' 张参考图（仅保留首帧与提示词；角色/场景一致性请改用支持参考图的厂商）'));
-        }
-        const audCount = Array.isArray(o.audioRefs) ? o.audioRefs.length : 0;
-        if (audCount > (caps.audio || 0)) o.warn('参考音频 ' + audCount + ' 条超过该厂商上限 ' + (caps.audio || 0) + ' 条，本次只使用前 ' + (caps.audio || 0) + ' 条');
+      const cap = (VIDEO_REF_CAPS[vendor] || { img: 8 }).img;
+      const fit = fitVideoImages(frameBlob, o.refs || [], cap, !!o.hardFrame);
+      if (o.onDelivery && (fit.plan.state === 'sent' || fit.plan.state === 'downgraded')) {
+        try { o.onDelivery(Object.assign({}, fit.plan, { count: fit.blobs.length, cap })); } catch { /* 记录失败不影响发送 */ }
       }
+      if (o.warn) {
+        if (fit.plan.dropped && fit.plan.state !== 'unsupported') o.warn(fit.plan.say);
+        else if (fit.plan.state === 'unsupported' && fit.plan.dropped) o.warn('该厂商不支持实体参考图，本次将忽略 ' + fit.plan.dropped + ' 张参考图（仅保留首帧与提示词；角色/场景一致性请改用支持参考图的厂商）');
+        const audCap = (VIDEO_REF_CAPS[vendor] || {}).audio || 0;
+        const audCount = Array.isArray(o.audioRefs) ? o.audioRefs.length : 0;
+        if (audCount > audCap) o.warn('参考音频 ' + audCount + ' 条超过该厂商上限 ' + audCap + ' 条，本次只使用前 ' + audCap + ' 条');
+      }
+      o.refCap = cap;
+      o.refs = fit.keptRefs;
       if (vendor !== 'openai' && vendor !== 'seedance') {
         const run = VIDEO_VENDOR_RUNNERS[vendor];
         if (!run) {
@@ -7736,8 +7743,8 @@ function queueThumb(assetId) {
       // 不收 [{url,role}] 对象数组；resolution 用大写枚举；无 generate_audio/output_format 参数。
             const headers = { 'Content-Type': 'application/json', ...(s.apiKey ? { Authorization: 'Bearer ' + s.apiKey } : {}) };
       // 尾帧+参考图同连（跨镜衔接）→ 尾帧降级为第一张衔接参考图（first_frame/reference_image 互斥），标注写在提示词里
-      const vRefs = o.hardFrame ? [] : (o.refs || []).slice(0, 8);
-      const downgrade = Boolean(frameBlob && vRefs.length);
+      const vRefs = fit.keptRefs;
+      const downgrade = fit.plan.state === 'downgraded';
       if (downgrade) prompt = videoRefNote(o.refNames) + '\n' + prompt; // 前置硬约束
       const body = {
         ...(s.model ? { model: s.model } : {}),
@@ -7748,12 +7755,11 @@ function queueThumb(assetId) {
         ratio: o.ratio || '16:9',
       };
       // 首帧图生视频：构图以首帧为准——Seedance 系要求首帧模式必须 ratio=adaptive（仅纯首帧模式）
-      if (frameBlob && !downgrade) {
+      if (fit.plan.sendFrame && frameBlob && !downgrade) {
         body.ratio = 'adaptive';
         try { body.image = await blobToDataUrlScaled(frameBlob); } catch { /* 忽略首帧编码失败 */ }
-      } else if (vRefs.length) {
-        const imgs = downgrade ? [frameBlob].concat(vRefs) : vRefs;
-        body.images = await Promise.all(imgs.map(async (b) => ({ url: await blobToDataUrlScaled(b), role: 'reference_image' })));
+      } else if (fit.blobs.length) {
+        body.images = await Promise.all(fit.blobs.map(async (b) => ({ url: await blobToDataUrlScaled(b), role: 'reference_image' })));
       }
       // 可选参数：勾选才发送 generate_audio；output_format 留空不发送
       if (s.generateAudio === true) body.generate_audio = true;
@@ -11678,23 +11684,57 @@ function queueThumb(assetId) {
       const mode = o.frameMode || 'auto';
       const cap = o.refCap == null ? 8 : Number(o.refCap);
       if (!hasFrame && !refCount) {
-        return { state: 'missing', field: '', sendFrame: false, sendRefs: 0, say: '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
+        return { state: 'missing', field: '', sendFrame: false, sendRefs: 0, dropped: 0, say: '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
       }
       if (mode === 'hard' && hasFrame && refCount) {
-        return { state: 'unsupported', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '硬首帧会丢掉角色参考图。请改成自动，让首帧和参考图一起送。本次没有生成。' };
+        return { state: 'unsupported', field: 'first_frame', sendFrame: true, sendRefs: 0, dropped: refCount, say: '硬首帧会丢掉角色参考图。请改成自动，让首帧和参考图一起送。本次没有生成。' };
       }
       if (refCount && cap <= 0) {
-        return { state: 'unsupported', field: hasFrame ? 'first_frame' : '', sendFrame: hasFrame, sendRefs: 0, say: hasFrame
+        return { state: 'unsupported', field: hasFrame ? 'first_frame' : '', sendFrame: hasFrame, sendRefs: 0, dropped: refCount, say: hasFrame
           ? '这个视频模型只能收首帧，角色参考图送不进去。请换支持参考图的模型。本次没有生成。'
           : '这个视频模型不支持参考图，这一段又没有分镜首帧。请换模型或先生成分镜。' };
       }
       if (hasFrame && refCount) {
-        const n = Math.min(cap, refCount);
-        return { state: 'downgraded', field: 'reference_image', sendFrame: false, sendRefs: n + 1, say: '这个模型不能同时用首帧和参考图。分镜首帧会作为第一张参考图送出，另外 ' + n + ' 张角色或场景图一起送。' };
+        const room = Math.max(0, cap - 1);
+        const n = Math.min(room, refCount);
+        const dropped = refCount - n;
+        let say = '这个模型不能同时用首帧和参考图。分镜首帧会作为第一张参考图送出，另外 ' + n + ' 张角色或场景图一起送。';
+        if (dropped) say += '该模型最多 ' + cap + ' 张，其余 ' + dropped + ' 张这次没有送出。';
+        return { state: 'downgraded', field: 'reference_image', sendFrame: false, sendRefs: n + 1, dropped, say };
       }
-      if (hasFrame) return { state: 'sent', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '将送出分镜首帧。' };
-      const n = Math.min(cap, refCount);
-      return { state: 'sent', field: 'reference_image', sendFrame: false, sendRefs: n, say: '将送出 ' + n + ' 张参考图。' };
+      if (hasFrame) return { state: 'sent', field: 'first_frame', sendFrame: true, sendRefs: 0, dropped: 0, say: '将送出分镜首帧。' };
+      const n = Math.min(Math.max(0, cap), refCount);
+      const dropped = refCount - n;
+      let say = '将送出 ' + n + ' 张参考图。';
+      if (dropped) say += '该模型最多 ' + cap + ' 张，其余 ' + dropped + ' 张这次没有送出。';
+      return { state: 'sent', field: 'reference_image', sendFrame: false, sendRefs: n, dropped, say };
+    }
+    function fitVideoImages(frameBlob, refs, cap, hardFrame) {
+      // 按 videoConditionPlan 的张数裁切。首帧占 1 个名额，总数不超过厂商上限。
+      const all = Array.isArray(refs) ? refs.slice() : [];
+      if (hardFrame) {
+        return {
+          blobs: frameBlob ? [frameBlob] : [],
+          keptRefs: [],
+          plan: { state: frameBlob ? 'sent' : 'missing', field: frameBlob ? 'first_frame' : '', sendFrame: !!frameBlob, sendRefs: 0, dropped: 0, say: frameBlob ? '将送出分镜首帧。' : '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' },
+        };
+      }
+      const plan = videoConditionPlan({ hasFrameBlob: !!frameBlob, refCount: all.length, frameMode: 'auto', refCap: cap });
+      if (plan.state === 'downgraded') {
+        const keep = Math.max(0, plan.sendRefs - 1);
+        const kept = all.slice(0, keep);
+        return { blobs: frameBlob ? [frameBlob].concat(kept) : kept, keptRefs: kept, plan };
+      }
+      if (plan.sendFrame && frameBlob) return { blobs: [frameBlob], keptRefs: [], plan };
+      const kept = all.slice(0, plan.sendRefs);
+      return { blobs: kept, keptRefs: kept, plan };
+    }
+    function imageRefPayload(dataUrls, mode) {
+      const urls = (dataUrls || []).filter(Boolean);
+      if (!urls.length) return { state: 'none', field: '', count: 0, ok: true };
+      if (mode === 'edits') return { state: 'sent', field: 'image[]', count: urls.length, ok: true };
+      if (mode === 'compshare' || mode === 'sanbao') return { state: 'sent', field: 'reference', count: urls.length, ok: true };
+      return { state: 'sent', field: 'image', count: urls.length, ok: true, image: urls };
     }
     function markDownstreamStale(nodeId) {
       const ids = [];
@@ -12123,6 +12163,17 @@ function queueThumb(assetId) {
             refNames: refs.map((r) => r.entity || r.name || ''), // 跨镜衔接标注用（图2..N 的实体名）
             nodeExtra: n.data.vidExtra, // 节点级扩展参数（手动参数框，如 {"use_context_ir":true}）
             warn: addWarn, // 参考素材超限等告警回传（节点上可见）
+            onDelivery: (actual) => {
+              update((s) => {
+                const nd = s.graph.nodes[n.id];
+                if (!nd || !actual) return;
+                const expected = actual.sendFrame ? 1 : actual.sendRefs;
+                nd.data.refDelivery = actual.count === expected ? actual : Object.assign({}, actual, {
+                  state: 'mismatch',
+                  say: '实际送出 ' + actual.count + ' 张图，和计划的 ' + expected + ' 张不一致。',
+                });
+              });
+            },
             // 任务提交成功即持久化 task id：轮询中断/页面关闭后仍可凭 id 回查结果（钱花了就必须能找回）
             onTask: (tid, qurl) => {
               update((s) => { const nd = s.graph.nodes[n.id]; if (nd) { nd.data.taskId = String(tid || ''); nd.data.taskQueryUrl = String(qurl || ''); } });
@@ -24228,6 +24279,7 @@ const DIRECTOR_KEY_HELP = [
           window.__DSH_IC_IMGREF__ = { rawImageDims, sniffImageEncoding, registerReferenceAsset };
           // IC-03：视频厂商识别/前缀归一化的纯函数出口（供 scripts/test-vendor-detect.mjs 直接断言）
           window.__DSH_IC_VENDOR__ = { detectVideoVendor, gatewayPrefixFor, wanEndpoints, vendorBase, VIDEO_REF_CAPS, needsSimpleMediaRetry, buildSimpleMediaRetryBody, wanTaskIdOf, wanStatusOf, wanPollState, buildSanbaoVideoBody, sanbaoTaskIdOf, sanbaoPollState, needsSanbaoMediaRetry, retryableDownloadError, downloadVideoWithRetry, SANBAO_DOWNLOAD_RETRY_MS, SANBAO_DOWNLOAD_RETRY_STEP_MS, buildSanbaoImageBody, sanbaoImageResultOf, sanbaoImagePollState, bibleStyleAnchor };
+          window.__DSH_IC_GEN__ = { apiImage, apiVideo };
           // 按镜头切段（分段生成本身就是最容易出错的地方）：规划器 + 强弱模型分流 + 节点段区间解析
           // 供 scripts/test-segment-plan.mjs 直接断言
           window.__DSH_IC_SEGMENT__ = { planShotSegments, isCutPoint, segmentNeedsHardFrame, videoSegmentOf, shotContinuityPlan };

@@ -3177,6 +3177,14 @@ function connectEdge(doc, fromId, toId, fromPort, toPort) {
   doc.edges.push(edge);
   return edge;
 }
+/** 分镜首帧只在别人已经占着 frame 口时才改接到 ref。重复修复不能把自己的首帧再拉成一条参考线。 */
+function connectMvImageLink(doc, fromNode, toNode, toPort) {
+  if (toPort === 'frame') {
+    const owner = (doc.edges || []).find((e) => e && e.toNode === toNode.id && e.toPort === 'frame');
+    if (owner && owner.fromNode !== fromNode.id) return connectEdge(doc, fromNode.id, toNode.id, 'out', 'ref');
+  }
+  return connectEdge(doc, fromNode.id, toNode.id, 'out', toPort);
+}
 /** 在两个节点间连线（画布工作流的关键：剧本→分镜→图→视频靠连线组织，不要复制文本）。 */
 function canvasConnect(args) {
   const id = String((args && args.projectId) || '');
@@ -3738,14 +3746,7 @@ function layMusicVideo(doc, audio, pkg) {
     const fromNode = link.fromName ? findRef(link.fromRole, link.fromName) : findKey(link.fromKey);
     const toNode = findKey(link.toKey);
     if (!fromNode || !toNode) continue;
-    if (link.toPort === 'frame') {
-      const already = (doc.edges || []).some((e) => e.toNode === toNode.id && e.toPort === 'frame');
-      if (already) {
-        connectEdge(doc, fromNode.id, toNode.id, 'out', 'ref');
-        continue;
-      }
-    }
-    connectEdge(doc, fromNode.id, toNode.id, 'out', link.toPort);
+    connectMvImageLink(doc, fromNode, toNode, link.toPort);
   }
   const cut = upsertMvNode(doc, 'mv:' + from + ':cut', 'finalcut', 'MV 成片', {
     mvFrom: from, status: 'idle', resolution: '720P', ratio: '16:9', transition: 'none',
@@ -4730,11 +4731,7 @@ export function apply(ctx) {
           const fromNode = link.fromName ? findRef(link.fromRole, link.fromName) : findKey(link.fromKey);
           const toNode = findKey(link.toKey);
           if (!fromNode || !toNode) continue;
-          if (link.toPort === 'frame' && (doc.edges || []).some((e) => e.toNode === toNode.id && e.toPort === 'frame')) {
-            connectEdge(doc, fromNode.id, toNode.id, 'out', 'ref');
-          } else {
-            connectEdge(doc, fromNode.id, toNode.id, 'out', link.toPort);
-          }
+          connectMvImageLink(doc, fromNode, toNode, link.toPort);
           wired += 1;
         }
         doc.updatedAt = Date.now();

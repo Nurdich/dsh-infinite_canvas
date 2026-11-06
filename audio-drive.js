@@ -2698,23 +2698,30 @@ export function videoConditionPlan(input) {
   const mode = o.frameMode || 'auto';
   const cap = o.refCap == null ? 8 : Number(o.refCap);
   if (!hasFrame && !refCount) {
-    return { state: 'missing', field: '', sendFrame: false, sendRefs: 0, say: '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
+    return { state: 'missing', field: '', sendFrame: false, sendRefs: 0, dropped: 0, say: '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
   }
   if (mode === 'hard' && hasFrame && refCount) {
-    return { state: 'unsupported', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '硬首帧会丢掉角色参考图。请改成自动，让首帧和参考图一起送。本次没有生成。' };
+    return { state: 'unsupported', field: 'first_frame', sendFrame: true, sendRefs: 0, dropped: refCount, say: '硬首帧会丢掉角色参考图。请改成自动，让首帧和参考图一起送。本次没有生成。' };
   }
   if (refCount && cap <= 0) {
-    return { state: 'unsupported', field: hasFrame ? 'first_frame' : '', sendFrame: hasFrame, sendRefs: 0, say: hasFrame
+    return { state: 'unsupported', field: hasFrame ? 'first_frame' : '', sendFrame: hasFrame, sendRefs: 0, dropped: refCount, say: hasFrame
       ? '这个视频模型只能收首帧，角色参考图送不进去。请换支持参考图的模型。本次没有生成。'
       : '这个视频模型不支持参考图，这一段又没有分镜首帧。请换模型或先生成分镜。' };
   }
   if (hasFrame && refCount) {
-    const n = Math.min(cap, refCount);
-    return { state: 'downgraded', field: 'reference_image', sendFrame: false, sendRefs: n + 1, say: '这个模型不能同时用首帧和参考图。分镜首帧会作为第一张参考图送出，另外 ' + n + ' 张角色或场景图一起送。' };
+    const room = Math.max(0, cap - 1);
+    const n = Math.min(room, refCount);
+    const dropped = refCount - n;
+    let say = '这个模型不能同时用首帧和参考图。分镜首帧会作为第一张参考图送出，另外 ' + n + ' 张角色或场景图一起送。';
+    if (dropped) say += '该模型最多 ' + cap + ' 张，其余 ' + dropped + ' 张这次没有送出。';
+    return { state: 'downgraded', field: 'reference_image', sendFrame: false, sendRefs: n + 1, dropped, say };
   }
-  if (hasFrame) return { state: 'sent', field: 'first_frame', sendFrame: true, sendRefs: 0, say: '将送出分镜首帧。' };
-  const n = Math.min(cap, refCount);
-  return { state: 'sent', field: 'reference_image', sendFrame: false, sendRefs: n, say: '将送出 ' + n + ' 张参考图。' };
+  if (hasFrame) return { state: 'sent', field: 'first_frame', sendFrame: true, sendRefs: 0, dropped: 0, say: '将送出分镜首帧。' };
+  const n = Math.min(Math.max(0, cap), refCount);
+  const dropped = refCount - n;
+  let say = '将送出 ' + n + ' 张参考图。';
+  if (dropped) say += '该模型最多 ' + cap + ' 张，其余 ' + dropped + ' 张这次没有送出。';
+  return { state: 'sent', field: 'reference_image', sendFrame: false, sendRefs: n, dropped, say };
 }
 
 function personFromRaw(raw, story) {
