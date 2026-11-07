@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizeSkillProfile, DEFAULT_SKILL_PROFILE } from './index-core-skill-profile.js';
-import { mergeDocWrite, createJobBook, decideAnalyze, decideTimeline, edgeBlock, edgeBlockSay, honestSay, mediaKind } from './gen-pool.js';
+import { mergeDocWrite, createJobBook, decideAnalyze, decideTimeline, edgeBlock, edgeBlockSay, honestSay, mediaKind, PORTS as PORT_TABLE, normalizeNodeType } from './gen-pool.js';
 import {
   SUGGESTED_MODEL_ID,
   USER_MODEL_NAME,
@@ -68,6 +68,8 @@ import {
   AUDIO_ENDPOINT_PRESETS,
   imageRefPayload,
   videoConditionPlan,
+  heuristicAnalysis,
+  mockAnalysis,
 } from './audio-drive.js';
 import { initPackBase, packInventory, allowedIds } from './skill-pack-loader.js';
 import { buildSkillPack, SKILL_CATALOG, renderInventory, renderProfile } from './skill-pack.js';
@@ -1928,11 +1930,6 @@ function defaultLabel(text) {
   const line = String(text || '').trim().split(/\r?\n/)[0] || '';
   return line.length > 18 ? line.slice(0, 18) + '…' : (line || '未命名');
 }
-/** 旧节点类型 → 合并类型（与客户端 client.js 同一映射）：
- *  image-gen / image-asset → image，video-gen / video-asset → video。
- *  旧项目文档读入时统一归一（只改 type，节点 data / 连线端点原样保留：有 assetId 就是资产，有 prompt 就是提示词）。 */
-const LEGACY_NODE_TYPES = { 'image-gen': 'image', 'image-asset': 'image', 'video-gen': 'video', 'video-asset': 'video' };
-function normalizeNodeType(type) { return LEGACY_NODE_TYPES[type] || type; }
 function normalizeNode(n) {
   if (n && typeof n === 'object') {
     const t = normalizeNodeType(n.type);
@@ -3106,17 +3103,6 @@ async function canvasDelete(args) {
 
 /** 与客户端一致的端口表（连线校验用）。image / video 是合并类型（旧生成/资产节点归一到这里）：
  *  image 输入 prompt+ref、输出 out；video 输入 prompt+frame+ref、输出 out/tailpick/last。 */
-const PORT_TABLE = {
-  'text': { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
-  'shot': { inputs: [{ id: 'char', kind: 'image' }, { id: 'scene', kind: 'image' }, { id: 'prop', kind: 'image' }], outputs: [{ id: 'visual', kind: 'text' }, { id: 'motion', kind: 'text' }] },
-  'script': { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
-  'storyboard': { inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }, { id: 'music', kind: 'text' }], outputs: [{ id: 'out', kind: 'text' }, { id: 'tail', kind: 'text' }] },
-  'audio': { inputs: [], outputs: [{ id: 'out', kind: 'audio' }, { id: 'analysis', kind: 'text' }] },
-  'image': { inputs: [{ id: 'prompt', kind: 'text' }, { id: 'ref', kind: 'image' }], outputs: [{ id: 'out', kind: 'image' }] },
-  'video': { inputs: [{ id: 'prompt', kind: 'text' }, { id: 'frame', kind: 'image' }, { id: 'ref', kind: 'image' }], outputs: [{ id: 'out', kind: 'video' }, { id: 'tailpick', kind: 'image' }, { id: 'last', kind: 'image' }] },
-  'finalcut': { inputs: [{ id: 'in', kind: 'video' }, { id: 'music', kind: 'audio' }], outputs: [] },
-  'group': { inputs: [], outputs: [] },
-};
 const MULTI_INPUT_PORTS = new Set(['ref', 'char', 'scene', 'prop', 'in']);
 /** Agent 改动了项目文档：记一次性信号，让画布在几秒内拉回合并（否则画布上看不到 Agent 的改动）。
  *  canvasId 记录是哪个画布被改（缺省/默认画布 = null），客户端只刷新当前画布。 */
@@ -3551,50 +3537,16 @@ async function canvasAnalyzeAudio(args) {
     };
   }
   const energy = Array.isArray(args && args.energy) && args.energy.length ? args.energy : null;
-  const file = (!energy && node.data.assetId) ? readAssetAudioBuffer(node.data.assetId) : null;
-  if (!node.data.assetId && !energy && !(Number(args && args.durationSec) > 0)) {
-    throw new Error('音频节点还没有歌曲：上传、从资产库放入，或传入 assetId / energy');
-  }
-  if (file && file.tooBig) {
-    const opened = jobBook.open({
-      nodeId: node.id, kind: 'analyze', status: 'queued', owner: '',
-      line: '歌已经在节点里。文件太大，已交给画布压成 WAV 再听，还没有结果。',
-    });
-    rememberJob(node, opened.job);
-    doc.updatedAt = Date.now();
-    writeToolDoc(args, doc);
-    await canvasRunNode({ projectId: id, canvasId, nodeId: node.id });
-    return {
-      ok: true, inProgress: true, queued: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
-      job: opened.job, deferred: true, cached: false, text: opened.job.line,
-    };
-  }
-  const provider = audioProviderFromConfig(node.data.audioModel || node.data.model || '');
-  const localOnly = !provider;
+  const durationSec = Number(args && args.durationSec) || 0;
+  const analysis = energy
+    ? heuristicAnalysis({ durationSec, energy, hopSec: args && args.hopSec })
+    : mockAnalysis(durationSec || 60, ['没有音频字节，已用占位结构']);
   const hostJob = jobBook.open({
-    nodeId: node.id, kind: 'analyze', owner: 'host', status: 'running', phase: 'connecting',
-    line: '正在听，还没有分析完。', force: !!(args && (args.force === true || args.force === 'true')),
+    nodeId: node.id, kind: 'analyze', owner: 'host', status: 'running', phase: 'local',
+    line: '本地节拍，没有调用全模态。', force: !!(args && (args.force === true || args.force === 'true')),
   });
   rememberJob(node, hostJob.job);
-  let analysis;
-  try {
-    analysis = await understandFromRequest({
-    provider: provider || null,
-    audioBase64: file && file.buf ? file.buf.toString('base64') : '',
-    format: file && file.format,
-    durationSec: Number(args && args.durationSec) || (file && file.duration) || 0,
-    energy: energy || undefined,
-    hopSec: args && args.hopSec,
-    idleMs: provider && Number(provider.analysisIdleSec) > 0 ? Number(provider.analysisIdleSec) * 1000 : undefined,
-    progressId: args && args.progressId,
-    windowIndex: args && args.windowIndex,
-    windowCount: args && args.windowCount,
-    phase: 'analysis',
-    });
-  } catch (e) {
-    jobBook.fail(node.id, 'analyze', (e && e.message) || e);
-    throw e;
-  }
+  const localOnly = true;
   node.data.analysis = analysis;
   node.data.status = 'done';
   node.data.error = null;
@@ -6546,10 +6498,12 @@ export function apply(ctx) {
             if (req.method !== 'GET') { res.statusCode = 405; res.end('仅接受 GET'); return; }
             const u = new URL(req.url, 'http://localhost');
             const rel = String(u.searchParams.get('rel') || '').replace(/\\/g, '/').replace(/^\/+/, '');
-            if (rel.includes('..') || !/^assets\/[\w.\u4e00-\u9fa5/-]+$/.test(rel)) { res.statusCode = 400; res.end('非法路径'); return; }
             const assetsDir = path.join(HERE, 'assets');
+            const poolFile = path.resolve(path.join(HERE, 'gen-pool.js'));
+            const allowed = rel === 'gen-pool.js' || /^assets\/[\w.\u4e00-\u9fa5/-]+$/.test(rel);
+            if (rel.includes('..') || !allowed) { res.statusCode = 400; res.end('非法路径'); return; }
             const abs = path.resolve(path.join(HERE, rel));
-            if (!abs.startsWith(assetsDir)) { res.statusCode = 400; res.end('非法路径'); return; }
+            if (abs !== poolFile && !abs.startsWith(assetsDir)) { res.statusCode = 400; res.end('非法路径'); return; }
             let st;
             try { st = statSync(abs); } catch { res.statusCode = 404; res.end('not found'); return; }
             if (!st.isFile()) { res.statusCode = 404; res.end('not found'); return; }

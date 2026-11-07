@@ -191,27 +191,6 @@ export function shotRefNames(shot) {
   return { characters, locations: scene ? [scene] : [] };
 }
 
-function refRow(states, role, name) {
-  return (states || []).find((s) => s && s.role === role && s.name === name) || null;
-}
-
-/** 这个镜头的分镜图能不能画：每个角色和场景都要有图，并且已定稿。 */
-export function missingRefsForShot(shot, states) {
-  const need = shotRefNames(shot);
-  const missing = [];
-  for (const name of need.characters) {
-    const row = refRow(states, 'char', name);
-    if (!row || !row.assetId) missing.push({ role: 'char', name, why: 'missing' });
-    else if (!row.locked) missing.push({ role: 'char', name, why: 'unlocked' });
-  }
-  for (const name of need.locations) {
-    const row = refRow(states, 'loc', name);
-    if (!row || !row.assetId) missing.push({ role: 'loc', name, why: 'missing' });
-    else if (!row.locked) missing.push({ role: 'loc', name, why: 'unlocked' });
-  }
-  return missing;
-}
-
 export function refProgress(states) {
   const list = states || [];
   const tally = (role) => {

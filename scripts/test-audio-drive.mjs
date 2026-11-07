@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as DshMedia from '../gen-pool.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const errs = [];
@@ -386,10 +387,10 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
     { role: 'char', name: '阿禾', assetId: '', locked: false },
     { role: 'loc', name: '巷口', assetId: 'loc-1', locked: false },
   ];
-  const missing = AD.missingRefsForShot({ characters: ['阿禾'], scene: '巷口' }, open);
+  const missing = DshMedia.missingRefsForShot({ characters: ['阿禾'], scene: '巷口' }, open);
   ok(missing.some((m) => m.name === '阿禾' && m.why === 'missing'), '没有图的角色没有拦住分镜');
   ok(missing.some((m) => m.name === '巷口' && m.why === 'unlocked'), '没定稿的场景没有拦住分镜');
-  const ready = AD.missingRefsForShot({ characters: ['阿禾'], scene: '巷口' }, [
+  const ready = DshMedia.missingRefsForShot({ characters: ['阿禾'], scene: '巷口' }, [
     { role: 'char', name: '阿禾', assetId: 'c1', locked: true },
     { role: 'loc', name: '巷口', assetId: 'l1', locked: true },
   ]);
@@ -803,7 +804,8 @@ function loadSegmentPlanner() {
     alert: noop, confirm: () => false, prompt: () => null,
   };
   sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
+  sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
+vm.createContext(sandbox);
   let pluginMod = null;
   sandbox.window.__ModuleLoader__ = { load(def) { pluginMod = def; } };
   vm.runInContext(src, sandbox, { filename: 'client.js' });

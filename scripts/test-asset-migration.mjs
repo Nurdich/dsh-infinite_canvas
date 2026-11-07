@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import * as DshMedia from '../gen-pool.js';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -77,6 +78,7 @@ sandbox.fetch = async (url, opts = {}) => {
   return { ok: true, status: 200, json: async () => ({}), text: async () => '{}' };
 };
 
+sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
 vm.createContext(sandbox);
 const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
 let mod = null;

@@ -20,6 +20,7 @@
  */
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import * as DshMedia from '../gen-pool.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,6 +66,7 @@ const sandbox = {
   alert: noop, confirm: () => false, prompt: () => null,
 };
 sandbox.globalThis = sandbox;
+sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
 vm.createContext(sandbox);
 let mod = null;
 sandbox.window.__ModuleLoader__ = { load(def) { mod = def; } };

@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import * as DshMedia from '../gen-pool.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
@@ -109,6 +110,7 @@ const sandbox = {
   alert: noop, confirm: () => false, prompt: () => null,
 };
 sandbox.globalThis = sandbox;
+sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
 vm.createContext(sandbox);
 let mod = null;
 sandbox.window.__ModuleLoader__ = { load(def) { mod = def; } };
