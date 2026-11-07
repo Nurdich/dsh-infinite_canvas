@@ -446,13 +446,8 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(client.includes("hostRpc('mvRepairRefs'"), '旧画布修复没有接到主机');
   const host = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
   ok(host.includes('async mvRepairRefs') && host.includes('planRefRepair'), '主机没有补角色图的接口');
-  const planBody = (src) => {
-    const rest = src.slice(src.indexOf('function videoConditionPlan'));
-    const cuts = ['\nfunction ', '\n    function '].map((mark) => rest.indexOf(mark, 10)).filter((n) => n > 0);
-    return rest.slice(0, Math.min(...cuts)).split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
-  };
-  const modSrc = fs.readFileSync(path.join(ROOT, 'audio-drive.js'), 'utf8');
-  ok(planBody(client) === planBody(modSrc), '页面上的视频参考计划与模块不一致');
+  ok(!/function videoConditionPlan/.test(client) && client.includes("hostRpc('mediaFit'"), '页面仍抄了一份视频参考计划，没有改走宿主');
+  ok(fs.readFileSync(path.join(ROOT, 'audio-drive.js'), 'utf8').includes('export function videoConditionPlan'), '宿主侧的视频参考计划被删掉了');
   const foreign = AD.planRefRepair({ characters: [{ name: '男主角' }], locations: [] }, {
     other: { id: 'other', type: 'image', data: { label: '男主角', mvFrom: 'audio-2', assetId: 'nope' } },
   }, 'audio-1');
@@ -716,6 +711,18 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(profile.form === 'music-video', '项目规格没有写成 music-video');
   const again = await byName.get('canvas_analyze_audio').execute({ projectId, nodeId: analyzed.nodeId }, {});
   ok(again.cached === true, '已有分析应直接返回，不重复听');
+  const rpc = mod._internals.rpcMethods();
+  const GP = await import(pathToFileURL(path.join(ROOT, 'gen-pool.js')).href);
+  ok(GP.honestSay('歌曲已经分析完，MV 时间轴也铺好了。', { hasAnalysis: false, hasPackage: false, job: { status: 'running', line: '正在听 1/3 · 1 分 54 秒 · 正在连接' } }).includes('正在听 1/3'), '助手把进行中的听歌说成了完成');
+  ok(GP.decideTimeline({ job: null, hasAnalysis: false, hasAsset: true }).action === 'need-analysis', '有歌没分析时不应直接去铺时间轴');
+  const bare = await byName.get('canvas_create_node').execute({ projectId, type: 'audio', name: '只有歌', assetId: 'song-1' }, {});
+  const queued = await byName.get('canvas_analyze_audio').execute({ projectId, nodeId: bare.nodeId }, {});
+  ok(queued.inProgress === true && queued.queued === true && /已经在节点里/.test(queued.text) && !/已分析/.test(queued.text), '有歌但没在听时仍说要上传或说已经分析完：' + (queued && queued.text));
+  await rpc.jobOpen({ projectId, nodeId: analyzed.nodeId, kind: 'analyze', owner: 'client', status: 'running', line: '正在听 1/3 · 1 分 54 秒 · 正在连接', force: true });
+  const joined = await byName.get('canvas_analyze_audio').execute({ projectId, nodeId: analyzed.nodeId }, {});
+  ok(joined.joined === true && joined.inProgress === true && /正在听 1\/3/.test(joined.text) && !/已分析/.test(joined.text), '节点已在听时助手又开了一次或说完成了：' + (joined && joined.text));
+  const waiting = await byName.get('canvas_music_timeline').execute({ projectId, nodeId: analyzed.nodeId, style: '红黑白水墨' }, {});
+  ok(waiting.inProgress === true && /还没有时间轴/.test(waiting.text) && /红黑白|风格已记下/.test(waiting.text), '听歌没完时铺时间轴没有如实说明：' + (waiting && waiting.text));
   const remixed = await byName.get('canvas_music_remix').execute({
     projectId, nodeId: analyzed.nodeId, style: '恶搞，人物替换',
     cuts: [8], descriptions: ['原镜人物挥手'], replacements: [{ name: '糯糯' }],
@@ -729,7 +736,6 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   }, {});
   ok(edited.ok === true && edited.package.scenes[0].join === 'continuous', '时间轴编辑没有改成续帧');
   ok(edited.package.scenes[0].refs.characters[0] === '糯糯', '时间轴编辑没有改参考角色');
-  const rpc = mod._internals.rpcMethods();
   const docPath = path.join(process.env.DSH_IC_PROJECTS_DIR, projectId + '.json');
   const before = JSON.parse(fs.readFileSync(docPath, 'utf8'));
   const analysisJson = JSON.stringify((before.nodes[analyzed.nodeId].data || {}).analysis);

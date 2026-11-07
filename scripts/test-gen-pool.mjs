@@ -100,6 +100,27 @@ ok(G.providerConcurrency({}, 'image') === 4 && G.providerConcurrency({}, 'video'
   ok(!removed.nodes.b, '墓碑没有删掉节点');
 }
 
+{
+  const book = G.createJobBook();
+  const first = book.open({ nodeId: 'img1', kind: 'image', owner: 'client', line: '正在生成' });
+  const second = book.open({ nodeId: 'img1', kind: 'image', owner: 'assistant' });
+  ok(first.joined === false && second.joined === true && second.job.id === first.job.id, '同一个图片节点的第二次生成没有并进同一次任务');
+  ok(book.open({ nodeId: 'img1', kind: 'video', owner: 'client' }).joined === false, '图片任务把视频任务也挡了');
+  const audio = book.open({ nodeId: 'a1', kind: 'analyze', status: 'queued', owner: '', line: '排队' });
+  const claim = book.open({ nodeId: 'a1', kind: 'analyze', owner: 'client' });
+  ok(audio.joined === false && claim.claimed === true && claim.joined === false && claim.job.status === 'running', '排队中的听歌没有被画布领走');
+  const again = book.open({ nodeId: 'a1', kind: 'analyze', owner: 'host' });
+  ok(again.joined === true, '领走之后宿主又开了一次听歌');
+  ok(G.decideAnalyze({ job: again.job, hasAsset: true }).action === 'join', '有进行中的听歌时决定函数仍要再听');
+  ok(G.decideAnalyze({ job: null, hasAsset: true }).action === 'queue-client', '歌在节点上时仍要在宿主再听一遍');
+  ok(G.decideAnalyze({ job: null, hasEnergy: true }).action === 'run-here', '带能量曲线的离线分析不能做');
+  const miss = G.edgeBlock({ id: 'v' }, [{ toNode: 'v', fromNode: 'i', toPort: 'ref' }], { i: { id: 'i', data: {} } });
+  ok(miss.length === 1 && /没有生成结果/.test(G.edgeBlockSay(miss)), '空的参考连线没有拦住');
+  ok(G.edgeBlock({ id: 'v' }, [], {}).length === 0, '没有连线也被拦住了');
+  ok(G.honestSay('已生成好了', { hasAsset: false, job: { status: 'running', line: '正在生成图片' } }) === '正在生成图片', '图片还在跑时仍说生成好了');
+  ok(G.mediaKind('finalcut') === 'compose' && G.mediaKind('audio') === 'analyze', '任务种类和节点对不上');
+}
+
 if (errs.length) {
   console.error('✗ 并发池测试失败 ' + errs.length + ' 项');
   for (const e of errs) console.error('  - ' + e);
