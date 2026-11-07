@@ -339,6 +339,17 @@ const imageCfg = { baseUrl: 'https://img.example.test/v1', apiKey: 'test-image',
   ok(delivery && delivery.count === 2 && delivery.sendRefs === 2 && /另外 1 张/.test(delivery.say), '修复后的说明和实际张数不一致：' + JSON.stringify(delivery));
 }
 
+{
+  calls.length = 0;
+  script = 'image-ok';
+  const face = markerBlob('same-face');
+  await gen.apiImage('镜1 角色甲', [face], imageCfg, {});
+  await gen.apiImage('镜2 角色甲', [face], imageCfg, {});
+  const posts = calls.filter((c) => String(c.url || '').includes('/images/generations'));
+  const url = dataUrlOf('same-face');
+  ok(posts.length === 2 && posts.every((p) => p.body && p.body.image && p.body.image[0] === url), '两镜请求没有带上同一份角色图字节');
+}
+
 if (errs.length) {
   console.error('✗ 参考图真实请求测试失败 ' + errs.length + ' 项');
   for (const e of errs) console.error('  - ' + e);

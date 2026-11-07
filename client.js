@@ -11305,8 +11305,11 @@ function queueThumb(assetId) {
     async function claimJob(node, kind, line) {
       const r = await hostRpc('jobOpen', {
         projectId: S.activeId, canvasId: activeCanvasId(), nodeId: node.id, kind, owner: 'client',
-        phase: 'connecting', line: line || '正在开始',
+        source: 'user', phase: 'connecting', line: line || '正在开始',
+        label: (node.data && node.data.label) || '',
+        model: (node.data && (node.data.imageModel || node.data.videoModel || node.data.model)) || '',
       });
+      if (r && r.needsConfirm) return r;
       if (r && r.job) {
         update((s) => {
           const nd = s.graph.nodes[node.id];
@@ -11441,12 +11444,27 @@ function queueThumb(assetId) {
           nd.data.analyzeRetry = false;
           nd.data.analyzeResume = 0;
           nd.data.adapt = null;
-          hostRpc('jobFinish', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'analyze', line: '分析已写入这个节点。' }).then((fin) => {
-            if (!(fin && fin.job && fin.job.followUp && fin.job.followUp.style)) return;
+          hostRpc('jobFinish', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'analyze', line: '分析已写入这个节点。' }).then(async (fin) => {
+            const follow = fin && fin.job && fin.job.followUp;
+            if (follow && follow.pipeline === 'mv') {
+              const cont = await hostRpc('mvContinue', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, style: follow.style || '' });
+              if (cont && (cont.needsConfirm || cont.text)) {
+                update((s) => {
+                  s.assistantChat = (s.assistantChat || []).concat([{
+                    role: 'assistant', text: cont.text || '', needsConfirm: !!cont.needsConfirm,
+                    pending: cont.needsConfirm ? { clientJob: cont.clientJob, args: cont.args || {}, say: cont.text } : null,
+                    preview: cont.preview || null,
+                  }]).slice(-40);
+                });
+                saveAssistantChat(S.activeId, activeCanvasId(), S.assistantChat);
+              }
+              return;
+            }
+            if (!(follow && follow.style)) return;
             update((s) => {
               const row = s.graph.nodes[n.id];
               if (!row) return;
-              row.data.styleText = fin.job.followUp.style;
+              row.data.styleText = follow.style;
               row.data.timelineOffer = '分析好了。风格已记下，点「生成时间轴」。';
             });
           }).catch(() => {});
@@ -11848,6 +11866,7 @@ function queueThumb(assetId) {
       if (type !== 'audio') {
         const kind = type === 'finalcut' ? 'compose' : type === 'storyboard' ? 'storyboard' : (type === 'script' || type === 'text' ? 'text' : type);
         const opened = await claimJob(n, kind, '正在生成');
+        if (opened && opened.needsConfirm) throw new Error(opened.text || '确认后才会生成');
         if (opened && opened.joined) return true;
       }
       const settings = loadSettings(); // 模型解析（供应商+模型）用
@@ -17324,310 +17343,28 @@ function queueThumb(assetId) {
       notify();
     }
 
-    /**
-     * 组装某生成能力下的注入切片文本。返回 { text, bytes }；任一层缺失则跳过。
-     * kind = script | storyboard | prompt | assets
-     * 这是「技能对所有提示词生成起作用」的核心：四条生成链路都从这里取。
-     */
+    /** 切片和提示词锁只在宿主 skill-pack.js。这里只取那一份。 */
     async function buildSkillPackText(kind, opts) {
       const o = opts || {};
       const pid = o.pid || S.activeId;
       if (!pid) return { text: '', bytes: 0 };
-      const manifest = await loadPackManifest();
-      if (!manifest) return { text: '', bytes: 0 };
-      const profile = o.profile || loadSkillProfile(pid);
-      // 四层都没选 → 不注入（老项目行为完全不变）。**规格也算一层**：只选「规格」时同样要注入，
-      // 否则对话侧带约束、画布侧不带，两端产出分叉。
-      const hasAnyLayer = !!(profile.lens || profile.form || profile.look || (profile.genres || []).length);
-      if (!hasAnyLayer && !o.force) return { text: '', bytes: 0 };
-      let P;
-      try { P = await loadPackModule(); } catch { return { text: '', bytes: 0 }; }
-      const zh = effLang() !== 'en';
-      const items = [];
-      const push = async (layer, entry) => {
-        if (!entry) return;
-        const md = await readPackCard(layer, entry.file);
-        if (md) items.push({ layer, md, meta: entry });
-      };
-      if (profile.lens) await push('lens', (manifest.lenses || []).find((x) => x.id === profile.lens));
-      for (const gid of (profile.genres || [])) {
-        const ge = (manifest.genres || []).find((x) => x.id === gid);
-        if (ge) { await push('genre', ge); continue; }
-        const ie = (manifest.industries || []).find((x) => x.id === gid);
-        if (ie) await push('industry', ie);
-      }
-      if (profile.form) await push('form', (manifest.forms || []).find((x) => x.id === profile.form));
-      if (profile.look) await push('look', (manifest.looks || []).find((x) => x.id === profile.look));
-      // 运镜词典跟着分镜与提示词走；打斗节奏只在分镜（它讲的是镜头组织手法）
-      if (kind === 'storyboard' || kind === 'prompt') {
-        for (const mid of (kind === 'storyboard' ? ['camera-moves', 'fight-rhythm'] : ['camera-moves'])) {
-          const mv = (manifest.moves || []).find((x) => x.id === mid);
-          if (mv) await push('moves', { ...mv, oneliner: mv.oneliner || '' });
-        }
-      }
-      if (!items.length) return { text: '', bytes: 0 };
-      const head = packHeadLine(kind, profile, manifest, zh);
-      const built = P.buildPackText(kind, items, { zh, head });
-      return { text: built.text, bytes: built.bytes };
+      try {
+        const r = await hostRpc('skillSlice', { projectId: pid, kind: kind || 'script', force: !!o.force, profile: o.profile });
+        return { text: (r && r.text) || '', bytes: (r && r.bytes) || 0 };
+      } catch { return { text: '', bytes: 0 }; }
     }
-
-    /** 注入块头部：写明生效配置与优先级。 */
-    function packHeadLine(kind, profile, manifest, zh) {
-      const nameOf = (layer, id) => {
-        if (!id) return '';
-        const e = (manifest[layer] || []).find((x) => x.id === id);
-        return e ? e.name : id;
-      };
-      const genreNames = (profile.genres || []).map((g) => {
-        const e = (manifest.genres || []).find((x) => x.id === g) || (manifest.industries || []).find((x) => x.id === g);
-        return e ? e.name : g;
-      });
-      const KIND = { script: ['剧本', 'script'], storyboard: ['分镜', 'storyboard'], prompt: ['提示词', 'prompt'], assets: ['资产设定图', 'asset sheet'] };
-      const kl = (KIND[kind] || [kind])[zh ? 0 : 1];
-      // 剧本能力切片的总纲：机制库条目 = 可自由组合的零件，绝不规定唯一走向；
-      // 素材优先级：已有小说/剧本原文与设定集 > 题材素材库（库条目供二次创作借形）。
-      const scriptDoctrine = zh
-        ? '【机制与素材】题材卡的机制库条目是可自由组合的零件：按当下故事的需要选择、改造、混搭或不用，事件与走向由剧本决定，条目绝不规定唯一走向，也绝不要求"用某设定就必须叠加某机制"。【素材优先级】已有小说/剧本原文与设定集设定 > 题材素材库：库条目仅供二次创作借形，绝不替代或改写既有设定。风格基调与导演运镜始终有效。'
-        : '[Mechanics & material] Genre mechanism entries are freely combinable parts: pick, adapt, mix or skip per the story at hand - events and direction belong to the script, entries never mandate a single direction, and no entry implies "use X therefore Y". [Material precedence] Existing novel/script text and the series bible outrank the genre library: library entries are optional shapes for adaptation, never replacements for established settings. Style and camera direction always apply.';
-      if (zh) {
-        return [
-          '【画布技能包 · ' + kl + '】',
-          '导演透镜：' + (nameOf('lenses', profile.lens) || '未选')
-            + '　题材：' + (genreNames.join('、') || '未选')
-            + '　规格：' + (nameOf('forms', profile.form) || '未选')
-            + '　影调：' + (profile.look ? nameOf('looks', profile.look) : '跟随导演'),
-          '优先级：用户显式指令 > 导演透镜 > 规格（仅单镜时长与结构上压过透镜；画幅由视频节点生成时决定，不在此列）> 题材 > 影调。以下为对应切片，写提示词时按它执行；与本块冲突的通用规则让位于本块。',
-          ...(kind === 'script' ? [scriptDoctrine] : []),
-        ].join('\n');
-      }
-      return [
-        '[Canvas skill pack · ' + kl + ']',
-        'Director lens: ' + (nameOf('lenses', profile.lens) || 'none')
-          + '  Genre: ' + (genreNames.join(', ') || 'none')
-          + '  Spec: ' + (nameOf('forms', profile.form) || 'none')
-          + '  Look: ' + (profile.look ? nameOf('looks', profile.look) : 'follow the lens'),
-        'Precedence: explicit user instruction > director lens > spec (clip length and structure only; aspect is set on the video node) > genre > look. The slices below are binding; generic rules that disagree give way.',
-        ...(kind === 'script' ? [scriptDoctrine] : []),
-      ].join('\n');
-    }
-
-    /**
-     * 图片 / 视频提示词的「风格锁」（注入分工契约）。
-     *
-     * 分工：导演的运镜手法/镜头语言/细色调在分镜层由 LLM 消化成逐镜 camera/motion/visual
-     * 字段（随结构化正文进请求）；技能卡切片只进剧本/分镜的系统提示当教材，绝不原文进
-     * 生成请求——视频编码器有效窗口只有几百 token，教材长文会稀释正文。
-     *
-     * 按生成能力取切片：
-     *   图片（medium='image'）—— 紧凑锁：镜头风格 bits + 色彩/影调（截断）+ 场面材料（260B）
-     *                            + 负向词（700B 总预算）；设定图额外带材质响应。
-     *   视频（kind='prompt'）—— 总控锁 ≤1.2KB：影调美学短语（成像底层摘要）+ 交付规格
-     *                            （单镜时长口径）+ 负向词 ≤6 条。全片风格锚（styleAnchor/
-     *                            style 首句）在正文「风格：」行，逐镜事实以正文为准。
-     *
-     * 不内联（叙事方法、剪辑节奏、运镜词典、题材颗粒长文……）：只对剧本/分镜有意义。
-     */
-    /**
-     * 图片生成专用的紧凑风格锁。
-     *
-     * 为什么单独一套：buildShotLockText 本来是给**视频**模型写的——它把透镜 YAML、影调全文、
-     * 题材颗粒、禁项说明整块塞进提示词，视频模型能消化。但同一个函数被图片生成复用后，
-     * 一次图片请求的提示词会被撑到 1.6 万字节中文长文——文生图模型会把结构化文字当成
-     * "要渲染的内容"，于是画面里出现大段乱码文字块（实测症状：角色设定图右侧整栏文字）。
-     * 图片只需要三件事：镜头与光比、主色与饱和度、要排除的东西。其余一律不注入。
-     */
-    async function buildImageLockText(P, manifest, profile, k) {
-      const parts = [];
-      const push = (label, body) => { const b = String(body || '').trim(); if (b) parts.push(label + '\n' + b); };
-      /** 按句末标点截断，避免切出半句；UTF-8 字节数手算（部分测试沙箱没有 TextEncoder）。 */
-      const cap = (text, maxBytes) => {
-        const t = String(text || '').replace(/\s+/g, ' ').trim();
-        if (!t) return '';
-        const bLen = (s) => { let n = 0; for (const ch of String(s)) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; } return n; };
-        if (bLen(t) <= maxBytes) return t;
-        const heads = t.split(/(?<=[。；;!?])/);
-        let out = '';
-        for (const h of heads) {
-          if (bLen(out + h) > maxBytes) break;
-          out += h;
-        }
-        return (out || t.slice(0, maxBytes)).trim();
-      };
-
-      // ① 透镜：只抽画面相关的几个键，绝不整块塞 YAML（里面的剪辑/声音对静帧无用）
-      const lensEntry = profile.lens ? (manifest.lenses || []).find((x) => x.id === profile.lens) : null;
-      if (lensEntry) {
-        const md = await readPackCard('lens', lensEntry.file);
-        if (md) {
-          const y = P.yamlBlock(md) || '';
-          const bits = [];
-          const mm = /lens_kit_mm:\s*\[([^\]]+)\]/.exec(y);
-          if (mm) {
-            const nums = mm[1].replace(/#.*$/, '').split(',').map((x) => x.trim()).filter(Boolean);
-            if (nums.length) bits.push('焦距 ' + nums.join('/') + 'mm');
-          }
-          const kr = /key_ratio:\s*"?([^"\n]+)"?/.exec(y);
-          if (kr) bits.push('光比 ' + kr[1].trim());
-          const dom = /\n\s*dominant:\s*([^\n]+)/.exec(y);
-          if (dom) bits.push('主色 ' + dom[1].trim());
-          const acc = /\n\s*accent:\s*([^\n]+)/.exec(y);
-          if (acc) bits.push('点缀 ' + acc[1].trim());
-          const sat = /\n\s*saturation:\s*([^\n]+)/.exec(y);
-          if (sat) bits.push('饱和 ' + sat[1].trim());
-          const con = /\n\s*contrast:\s*([^\n]+)/.exec(y);
-          if (con) bits.push('对比 ' + con[1].trim());
-          if (bits.length) push('画面风格：', bits.join('；') + '。');
-        }
-      }
-
-      // ② 影调：色彩命题 + 影调与光比（截断）；设定图额外要材质，普通图片不要
-      const lookEntry = profile.look ? (manifest.looks || []).find((x) => x.id === profile.look) : null;
-      if (lookEntry) {
-        const md = await readPackCard('look', lookEntry.file);
-        if (md) {
-          const color = cap(P.sectionText(md, '色彩命题'), 420);
-          if (color) push('色彩：', color);
-          const tone = cap(P.sectionText(md, '影调与光比'), 320);
-          if (tone) push('影调：', tone);
-          if (k === 'assets') {
-            const mat = cap(P.sectionText(md, '材质响应'), 300);
-            if (mat) push('材质：', mat);
-          }
-        }
-      }
-
-      // ③ 题材：只要可拍的场面材料（物件/动作/空间），禁项说明句对图无用
-      for (const gid of (profile.genres || [])) {
-        const ge = (manifest.genres || []).find((x) => x.id === gid) || null;
-        const ie = ge ? null : (manifest.industries || []).find((x) => x.id === gid);
-        const entry = ge || ie;
-        if (!entry) continue;
-        const md = await readPackCard(ge ? 'genre' : 'industry', entry.file);
-        if (!md) continue;
-        const gr = P.sectionText(md, '常见场面颗粒') || P.sectionText(md, '视觉母题');
-        if (gr) push('场面材料：', cap(gr, 260));
-      }
-
-      // ④ 负向词：四层合并，总预算 700 字节（图片模型对负向词敏感，太多会互相稀释）
-      const negs = [];
-      for (const [layer, id] of [['lens', profile.lens], ['look', profile.look], ['form', profile.form]]) {
-        if (!id) continue;
-        const entry = (manifest[layer === 'lens' ? 'lenses' : layer === 'look' ? 'looks' : 'forms'] || []).find((x) => x.id === id);
-        if (!entry) continue;
-        const md = await readPackCard(layer, entry.file);
-        if (!md) continue;
-        const neg = P.negativePhrases(md);
-        if (neg.length) negs.push(...neg);
-      }
-      for (const gid of (profile.genres || [])) {
-        const ge = (manifest.genres || []).find((x) => x.id === gid);
-        if (!ge) continue;
-        const md = await readPackCard('genre', ge.file);
-        if (!md) continue;
-        const neg = P.negativePhrases(md);
-        if (neg.length) negs.push(...neg);
-      }
-      if (negs.length) {
-        const uniq = [...new Set(negs.map((x) => String(x).trim()).filter(Boolean))];
-        push('必须排除：', cap(uniq.join(', '), 700));
-      }
-
-      if (!parts.length) return '';
-      return '[画面风格锁] 以下决定画面成色（与正文冲突时以本块为准）：\n' + parts.join('\n');
-    }
-
     async function buildShotLockText(kind, opts) {
       const medium = (opts && opts.medium) || 'video';
       const pid = (opts && opts.pid) || S.activeId;
       if (!pid) return '';
-      const manifest = await loadPackManifest();
-      if (!manifest) return '';
-      const profile = loadSkillProfile(pid);
-      // 规格也算一层（同 buildSkillPackText 说明）
-      if (!profile.lens && !profile.look && !profile.form && !(profile.genres || []).length) return '';
-      let P;
-      try { P = await loadPackModule(); } catch { return ''; }
-      const k = kind === 'assets' ? 'assets' : 'prompt';
-      // 图片与视频共用一个函数，但注入体积必须分开：图片模型会把长文当画面内容渲染。
-      if (medium === 'image') return buildImageLockText(P, manifest, profile, k);
-      const parts = [];
-      const push = (label, body) => {
-        const b = String(body || '').trim();
-        if (b) parts.push(label + '\n' + b);
-      };
-      // 按句末标点压缩（不切半句）：总控锁里唯一允许的压缩方式
-      const capZh = (text, maxBytes) => {
-        const t = String(text || '').replace(/\s+/g, ' ').trim();
-        if (!t) return '';
-        // UTF-8 字节数手算（不依赖 TextEncoder——部分测试沙箱没有该构造器）
-        const bLen = (s) => { let n = 0; for (const ch of String(s)) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; } return n; };
-        if (bLen(t) <= maxBytes) return t;
-        const heads = t.split(/(?<=[。；;!?])/);
-        let out = '';
-        for (const h of heads) {
-          if (bLen(out + h) > maxBytes) break;
-          out += h;
-        }
-        return (out || t.slice(0, maxBytes)).trim();
-      };
-      // —— 总控锁 v2（注入分工）：导演的运镜手法/镜头语言/细色调已在分镜层被 LLM 消化成
-      //   每镜 camera/motion/visual 字段（随结构化正文进请求），这里不再倒教材——视频编码器
-      //   有效窗口只有几百 token，长锁会稀释正文。锁只保留全片级总控元素，总量 ≤1.2KB。——
-      // ① 影调美学短语：影调卡「成像底层」摘要——全片质感的总控兜底（逐镜色调已写进 visual）
-      const lookEntry = profile.look ? (manifest.looks || []).find((x) => x.id === profile.look) : null;
-      if (lookEntry) {
-        const md = await readPackCard('look', lookEntry.file);
-        if (md) {
-          const essence = P.sectionText(md, '成像底层') || P.sectionText(md, '质感基线') || '';
-          if (essence) push('影调质感：', capZh(essence, 200));
-        }
-      }
-      // ② 交付规格：单镜时长口径（规格卡）
-      const formEntry = profile.form ? (manifest.forms || []).find((x) => x.id === profile.form) : null;
-      if (formEntry) {
-        const md = await readPackCard('form', formEntry.file);
-        if (md) {
-          const spec = P.frontmatterSpec(md);
-          const bits = [];
-          if (spec.asl_floor_s) bits.push('单镜不短于 ' + spec.asl_floor_s + 's');
-          if (spec.asl_target_s) bits.push('平均镜长 ' + spec.asl_target_s + 's');
-          if (bits.length) push('交付规格：', bits.join('；'));
-        }
-      }
-      // ③ 负向词：四层合并去重后只内联前 6 条——内联负向词会与正向争夺注意力（稀释规则），
-      //    只点名最可能出现的风险类；有独立负向词字段的厂商应改走字段（runner 侧，后续接通）
-      const negs = [];
-      const seenNeg = new Set();
-      const addNegs = (phrases) => {
-        for (const raw of (phrases || [])) {
-          const s = String(raw || '').trim();
-          if (s && !seenNeg.has(s.toLowerCase())) { seenNeg.add(s.toLowerCase()); negs.push(s); }
-        }
-      };
-      for (const [layer, id] of [['lens', profile.lens], ['look', profile.look], ['form', profile.form]]) {
-        if (!id) continue;
-        const entry = (manifest[layer === 'lens' ? 'lenses' : layer === 'look' ? 'looks' : 'forms'] || []).find((x) => x.id === id);
-        if (!entry) continue;
-        const md = await readPackCard(layer, entry.file);
-        if (md) addNegs(P.negativePhrases(md));
-      }
-      for (const gid of (profile.genres || [])) {
-        const ge = (manifest.genres || []).find((x) => x.id === gid);
-        if (!ge) continue;
-        const md = await readPackCard('genre', ge.file);
-        if (md) addNegs(P.negativePhrases(md));
-      }
-      if (negs.length) push('必须排除：', negs.slice(0, 6).join(', '));
-      // 特效演绎项目（fx_motion 卡）：注入速度铁律——与分镜契约同口径，锁住"模型演快必变慢走"的失败形态
-      if (await fxMotionEnabledFor(pid)) {
-        push('速度与特效：', '瞬时事件（一闪/瞬移/现身）=切点两侧的状态差；速度感只来自硬切、静止主体+光效突变、甩镜；禁止镜内高速位移。');
-      }
-
-      if (!parts.length) return '';
-      const head = '[全片风格锚] 以下为全片级总控；逐镜画面与动作以正文为准：';
-      return head + '\n' + parts.join('\n');
+      try {
+        const r = await hostRpc('skillLock', {
+          projectId: pid, kind, medium,
+          fxMotion: medium !== 'image' && await fxMotionEnabledFor(pid),
+        });
+        return (r && r.text) || '';
+      } catch { return ''; }
     }
-
     async function loadModelIndex() {
       if (MODEL_INDEX) return MODEL_INDEX;
       const r = await fetch(pluginAssetUrl(MODEL_DIR + 'index.json'));
@@ -23232,7 +22969,7 @@ const DIRECTOR_KEY_HELP = [
           (S.assistantChat || []).map((msg, i) => h('div', { key: 'a' + i, className: 'dshic-assist-msg' + (msg.role === 'user' ? ' is-user' : '') },
             (msg.attachments || []).length ? h('div', { className: 'dshic-assist-files' }, (msg.attachments || []).map((a, k) => h(AssistFileChip, { key: 'h' + k, file: a }))) : null,
             msg.reasoning ? h('details', { className: 'dshic-mtl-think', open: !!msg.live }, h('summary', null, T('caThinking')), h('pre', null, msg.reasoning)) : null,
-            msg.text || '',
+            msg.needsConfirm ? null : (msg.text || ''),
             (msg.steps || []).map((step, j) => h('button', {
               key: 's' + j, type: 'button', className: 'dshic-assist-step',
               onClick: () => { if (step.nodeId) update((s) => { s.sel = new Set([step.nodeId]); }); },

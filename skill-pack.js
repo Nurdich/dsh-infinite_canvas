@@ -36,6 +36,10 @@ export async function buildSkillPack(opts) {
   const inv = packInventory(hereDir);
   const allow = allowedIds(inv);
   const profile = normalizeSkillProfile(o.profile, allow);
+  const hasAnyLayer = !!(profile.lens || profile.form || profile.look || (profile.genres || []).length);
+  if (!hasAnyLayer && !o.force) {
+    return { text: '', bytes: 0, used: [], profile, inventory: inv };
+  }
 
   // 内层：genres 里既可能是叙事题材 id，也可能是行业题材 id —— 两者都从各自层读
   const items = [];
@@ -104,6 +108,7 @@ function headLine(kind, profile, inv, zh) {
       '导演透镜：' + nameOf('lenses', profile.lens) + '　题材：' + (genreNames.join('、') || '—')
         + '　规格：' + nameOf('forms', profile.form) + '　影调：' + (profile.look ? nameOf('looks', profile.look) : '跟随导演'),
       '优先级：用户显式指令 > 导演透镜 > 规格（仅单镜时长与结构上压过透镜；画幅由视频节点生成时决定，不在此列）> 题材 > 影调 > 技能默认。以下为对应切片，写提示词时必须遵守；与本块冲突的通则让位于本块。',
+      ...(kind === 'script' ? ['【机制与素材】题材卡的机制库条目是可自由组合的零件：按当下故事的需要选择、改造、混搭或不用，事件与走向由剧本决定，条目绝不规定唯一走向，也绝不要求"用某设定就必须叠加某机制"。【素材优先级】已有小说/剧本原文与设定集设定 > 题材素材库：库条目仅供二次创作借形，绝不替代或改写既有设定。风格基调与导演运镜始终有效。'] : []),
     ].join('\n');
   }
   return [
@@ -179,6 +184,163 @@ export function renderProfile(profile, inv, zh) {
     + '　题材=' + (g.join('、') || '（未选）')
     + '　规格=' + (nameOf('forms', profile.form) || '（未选）')
     + '　影调=' + (profile.look ? nameOf('looks', profile.look) : '跟随导演');
+}
+
+function utf8Len(s) {
+  let n = 0;
+  for (const ch of String(s || '')) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
+}
+function capText(text, maxBytes) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  if (utf8Len(t) <= maxBytes) return t;
+  const heads = t.split(/(?<=[。；;!?])/);
+  let out = '';
+  for (const h of heads) {
+    if (utf8Len(out + h) > maxBytes) break;
+    out += h;
+  }
+  return (out || t.slice(0, maxBytes)).trim();
+}
+
+/** 图片紧凑锁。长文会进画面，所以只留镜头、色彩、场面材料和负向词。 */
+async function buildImageLock(P, hereDir, profile, inv, kind) {
+  const parts = [];
+  const push = (label, body) => { const b = String(body || '').trim(); if (b) parts.push(label + '\n' + b); };
+  if (profile.lens) {
+    const md = readCard(hereDir, 'lenses', (findEntry(inv, 'lenses', profile.lens) || {}).file);
+    if (md) {
+      const y = P.yamlBlock(md) || '';
+      const bits = [];
+      const mm = /lens_kit_mm:\s*\[([^\]]+)\]/.exec(y);
+      if (mm) {
+        const nums = mm[1].replace(/#.*$/, '').split(',').map((x) => x.trim()).filter(Boolean);
+        if (nums.length) bits.push('焦距 ' + nums.join('/') + 'mm');
+      }
+      const kr = /key_ratio:\s*"?([^"\n]+)"?/.exec(y);
+      if (kr) bits.push('光比 ' + kr[1].trim());
+      const dom = /\n\s*dominant:\s*([^\n]+)/.exec(y);
+      if (dom) bits.push('主色 ' + dom[1].trim());
+      const acc = /\n\s*accent:\s*([^\n]+)/.exec(y);
+      if (acc) bits.push('点缀 ' + acc[1].trim());
+      const sat = /\n\s*saturation:\s*([^\n]+)/.exec(y);
+      if (sat) bits.push('饱和 ' + sat[1].trim());
+      const con = /\n\s*contrast:\s*([^\n]+)/.exec(y);
+      if (con) bits.push('对比 ' + con[1].trim());
+      if (bits.length) push('画面风格：', bits.join('；') + '。');
+    }
+  }
+  if (profile.look) {
+    const md = readCard(hereDir, 'looks', (findEntry(inv, 'looks', profile.look) || {}).file);
+    if (md) {
+      const color = capText(P.sectionText(md, '色彩命题'), 420);
+      if (color) push('色彩：', color);
+      const tone = capText(P.sectionText(md, '影调与光比'), 320);
+      if (tone) push('影调：', tone);
+      if (kind === 'assets') {
+        const mat = capText(P.sectionText(md, '材质响应'), 300);
+        if (mat) push('材质：', mat);
+      }
+    }
+  }
+  for (const gid of (profile.genres || [])) {
+    const ge = findEntry(inv, 'genres', gid);
+    const ie = ge ? null : findEntry(inv, 'industries', gid);
+    const entry = ge || ie;
+    if (!entry) continue;
+    const md = readCard(hereDir, ge ? 'genres' : 'industries', entry.file);
+    if (!md) continue;
+    const gr = P.sectionText(md, '常见场面颗粒') || P.sectionText(md, '视觉母题');
+    if (gr) push('场面材料：', capText(gr, 260));
+  }
+  const negs = [];
+  for (const [layer, id] of [['lenses', profile.lens], ['looks', profile.look], ['forms', profile.form]]) {
+    if (!id) continue;
+    const entry = findEntry(inv, layer, id);
+    if (!entry) continue;
+    const md = readCard(hereDir, layer, entry.file);
+    if (!md) continue;
+    negs.push(...(P.negativePhrases(md) || []));
+  }
+  for (const gid of (profile.genres || [])) {
+    const ge = findEntry(inv, 'genres', gid);
+    if (!ge) continue;
+    const md = readCard(hereDir, 'genres', ge.file);
+    if (md) negs.push(...(P.negativePhrases(md) || []));
+  }
+  if (negs.length) {
+    const uniq = [...new Set(negs.map((x) => String(x).trim()).filter(Boolean))];
+    push('必须排除：', capText(uniq.join(', '), 700));
+  }
+  if (!parts.length) return '';
+  return '[画面风格锁] 以下决定画面成色（与正文冲突时以本块为准）：\n' + parts.join('\n');
+}
+
+/** 视频总控锁。运镜教材不进请求，只留影调短语、交付规格和最多 6 条负向词。 */
+async function buildVideoLock(P, hereDir, profile, inv, fxMotion) {
+  const parts = [];
+  const push = (label, body) => { const b = String(body || '').trim(); if (b) parts.push(label + '\n' + b); };
+  if (profile.look) {
+    const md = readCard(hereDir, 'looks', (findEntry(inv, 'looks', profile.look) || {}).file);
+    if (md) {
+      const essence = P.sectionText(md, '成像底层') || P.sectionText(md, '质感基线') || '';
+      if (essence) push('影调质感：', capText(essence, 200));
+    }
+  }
+  if (profile.form) {
+    const md = readCard(hereDir, 'forms', (findEntry(inv, 'forms', profile.form) || {}).file);
+    if (md) {
+      const spec = P.frontmatterSpec(md);
+      const bits = [];
+      if (spec.asl_floor_s) bits.push('单镜不短于 ' + spec.asl_floor_s + 's');
+      if (spec.asl_target_s) bits.push('平均镜长 ' + spec.asl_target_s + 's');
+      if (bits.length) push('交付规格：', bits.join('；'));
+    }
+  }
+  const negs = [];
+  const seenNeg = new Set();
+  const addNegs = (phrases) => {
+    for (const raw of (phrases || [])) {
+      const s = String(raw || '').trim();
+      if (s && !seenNeg.has(s.toLowerCase())) { seenNeg.add(s.toLowerCase()); negs.push(s); }
+    }
+  };
+  for (const [layer, id] of [['lenses', profile.lens], ['looks', profile.look], ['forms', profile.form]]) {
+    if (!id) continue;
+    const entry = findEntry(inv, layer, id);
+    if (!entry) continue;
+    const md = readCard(hereDir, layer, entry.file);
+    if (md) addNegs(P.negativePhrases(md));
+  }
+  for (const gid of (profile.genres || [])) {
+    const ge = findEntry(inv, 'genres', gid);
+    if (!ge) continue;
+    const md = readCard(hereDir, 'genres', ge.file);
+    if (md) addNegs(P.negativePhrases(md));
+  }
+  if (negs.length) push('必须排除：', negs.slice(0, 6).join(', '));
+  if (fxMotion) push('速度与特效：', '瞬时事件（一闪/瞬移/现身）=切点两侧的状态差；速度感只来自硬切、静止主体+光效突变、甩镜；禁止镜内高速位移。');
+  if (!parts.length) return '';
+  return '[全片风格锚] 以下为全片级总控；逐镜画面与动作以正文为准：\n' + parts.join('\n');
+}
+
+/** 图片和视频提示词锁。剧本/分镜的长切片仍走 buildSkillPack。 */
+export async function buildPromptLock(opts) {
+  const o = opts || {};
+  const hereDir = String(o.hereDir || '');
+  const inv = packInventory(hereDir);
+  const profile = normalizeSkillProfile(o.profile, allowedIds(inv));
+  const hasAnyLayer = !!(profile.lens || profile.form || profile.look || (profile.genres || []).length);
+  if (!hasAnyLayer) return '';
+  const P = o.pack || await getPackModule();
+  const medium = o.medium || 'video';
+  const kind = o.kind === 'assets' ? 'assets' : 'prompt';
+  if (medium === 'image') return buildImageLock(P, hereDir, profile, inv, kind);
+  return buildVideoLock(P, hereDir, profile, inv, !!o.fxMotion);
 }
 
 export { readManifestRaw, normalizeSkillProfile };

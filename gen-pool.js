@@ -322,6 +322,8 @@ export function createJobBook() {
         }
         return { job: cur, joined: true, claimed: false };
       }
+      const gate = confirmPaidJob(o);
+      if (!gate.allow) return { job: null, joined: false, claimed: false, needsConfirm: true, preview: gate.preview };
       const job = {
         id: 'job-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         nodeId: String(o.nodeId || ''),
@@ -448,6 +450,64 @@ export function edgeBlockSay(missing) {
   if (row.why === 'no-asset') return '上游「' + (row.label || '') + '」还没有生成结果，这条线不能当成参考。';
   if (row.why === 'no-text') return '上游「' + (row.label || '') + '」还没有正文，不能接着生成。';
   return '有一条线的上游节点不在了。';
+}
+
+/** 会花钱的任务。听歌、写时间轴、改字不算。 */
+const PAID_JOB_KINDS = new Set(['image', 'video', 'compose', 'tts', 'music']);
+
+/**
+ * 唯一的付费确认。助手发起的要等用户点确认；节点上的生成按钮算确认（source=user）。
+ * 文本、分析和铺时间轴直接过。
+ */
+export function confirmPaidJob(input) {
+  const o = input || {};
+  const kind = String(o.kind || '');
+  const paid = PAID_JOB_KINDS.has(kind);
+  const preview = {
+    kind: paid ? kind : '',
+    count: Math.max(1, Number(o.count) || 1),
+    nodeId: String(o.nodeId || ''),
+    label: String(o.label || ''),
+    provider: String(o.provider || ''),
+    model: String(o.model || ''),
+    seconds: o.seconds != null && o.seconds !== '' ? o.seconds : '',
+    cost: o.cost ? String(o.cost) : '',
+  };
+  if (!paid) return { allow: true, paid: false, needsConfirm: false, preview };
+  if (o.source === 'assistant' && o.confirmed !== true) return { allow: false, paid: true, needsConfirm: true, preview };
+  return { allow: true, paid: true, needsConfirm: false, preview };
+}
+
+export function paidConfirmLine(preview) {
+  const p = preview || {};
+  const names = { image: '图片', video: '视频', compose: '成片', tts: '语音', music: '音乐' };
+  const unit = p.kind === 'video' ? ' 段' : p.kind === 'image' ? ' 张' : ' 项';
+  const bits = ['将生成' + (names[p.kind] || '内容') + ' ' + (p.count || 1) + unit];
+  if (p.kind === 'video' && p.seconds) bits[0] += ' · ' + p.seconds + 's';
+  if (p.label) bits.push(p.label);
+  else if (p.nodeId) bits.push(p.nodeId);
+  const model = [p.provider, p.model].filter(Boolean).join(' / ');
+  if (model) bits.push(model);
+  if (p.cost) bits.push('约 ' + p.cost);
+  return bits.join(' · ') + '。确认后才会执行。';
+}
+
+/** 一首歌往下走到哪一步。付费步骤只返回确认，不执行。 */
+export function nextMvPlanStep(input) {
+  const o = input || {};
+  if (!o.hasAudio) return { step: 'need-audio' };
+  if (!o.hasAnalysis) return { step: 'analyze' };
+  if (!o.hasPackage) return { step: 'timeline' };
+  if (!o.onCanvas) return { step: 'push' };
+  const missing = Number(o.missingRefs) || 0;
+  const unlocked = Number(o.unlockedRefs) || 0;
+  if (missing > 0) return { step: 'confirm-refs', kind: 'image', count: missing };
+  if (unlocked > 0) return { step: 'need-lock', count: unlocked };
+  const shots = Number(o.missingShots) || 0;
+  if (shots > 0) return { step: 'confirm-shots', kind: 'image', count: shots };
+  const videos = Number(o.missingVideos) || 0;
+  if (videos > 0) return { step: 'confirm-videos', kind: 'video', count: videos };
+  return { step: 'done' };
 }
 
 const CLAIM_DONE = /分析完|已经分析|听完了|时间轴也铺好|时间轴已铺|时间轴也已经|已生成|生成好了|生成完成/;
