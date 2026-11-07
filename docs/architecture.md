@@ -7,7 +7,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `index.js` | 宿主。项目和画布文档、SQLite 资产、`canvas_*` 工具、`/infinite-canvas/api/*`。真正的出图出视频不在这里发，只负责把「请画布执行」交给浏览器。 |
-| `client.js` | 浏览器。节点、连线、生成面板、时间轴、助手侧栏。图片、视频、成片、听歌的请求在这里组好，经宿主代理发出。 |
+| `client.js` | 浏览器。节点、连线、生成面板、时间轴、可拖动的助手窗口。图片、视频、成片、听歌的请求在这里组好，经宿主代理发出。 |
 | `audio-drive.js` | 纯函数。听歌请求、分窗、故事和 MV 包、参考图怎么放进请求、助手该不该动手。宿主引用它。浏览器不引用它。 |
 | `gen-pool.js` | 纯函数。并发池、文档合并，以及同一节点同一种任务的登记：加入、排队、完成、失败，以及助手的话能不能说「完成」。 |
 | `skill-pack.js` / `skill-pack-loader.js` / `index-core-skill-profile.js` | 把导演透镜、题材、规格、影调收成一段可注入的文字。宿主和浏览器各走一份入口，算法在 `assets/canvas-director/pack.js`。 |
@@ -75,7 +75,7 @@ TTS 没有单独的节点类型。角色声音是视频请求里的 `audios`，�
 | 时间轴「生成全部 / 此段 / 到结尾 / 重生成失败项」 | `runNodePool` → `runGenNode` |
 | 时间轴「开始分析」 | `genAudioNode` |
 | 时间轴「生成时间轴」 | `audioBuildTimeline` |
-| 全局助手 | `canvasAssistantTurn`。改字、连线、听歌、铺时间轴直接做。出图、出视频、成片、删除先出确认卡，确认后 `canvas_run_node`，浏览器再 `runGenNode`。 |
+| 全局助手 | `canvasAssistantTurn`。窗口浮在画布左侧，可拖、可改大小、可收成一颗按钮。改字、连线、听歌、铺时间轴直接做。出图、出视频、成片、删除先出确认卡，确认后 `canvas_run_node`，浏览器再 `runGenNode`。图片、音频、视频附件进同一次全模态请求；文本模型在调用前拒绝。 |
 | 批量并发 | `runNodePool` 只组工作项和字节，算法是 `gen-pool.js` 的 `runGenPool`。工人仍是 `runGenNode`。 |
 
 MV 的角色锁定、分镜闸门是加在这条通用路上的规则（`mvRefBlock`），不是另一套生成器。
@@ -94,6 +94,7 @@ MV 的角色锁定、分镜闸门是加在这条通用路上的规则（`mvRefBl
 - 浏览器里的并发池、`videoDeps`、`createAimd`。算法只在 `gen-pool.js`。
 - `PORTS` / `PORT_TABLE`、旧类型名映射、`missingRefsForShot` 的第二份和第三份。只留 `gen-pool.js`。
 - 浏览器里的 `videoConditionPlan` / `imageRefPayload`。裁切只在 `audio-drive.js`，浏览器问 `mediaFit`。
+- 音频节点上的「助手」页，以及只为它服务的 `audioAssistantTurn`、`runMvAssistantTurn`。改某一段、写风格走统一助手的 `canvas_music_timeline_edit` / `canvas_music_timeline`。节点上旧的 `assistantChat` 在打开画布时并进这一份历史。
 
 ## 还各写各的，以及原因
 

@@ -296,30 +296,41 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
 }
 
 {
-  const analysis = { durationSec: 20, bpm: 100, summary: '测试曲', sections: [{ label: 'verse', startSec: 0, endSec: 20, energy: 0.4 }] };
-  const pkg = AD.planMusicVideoPackage(analysis, { style: '冷' });
-  const state = {
-    hasAudio: true, hasAnalysis: true, confirmed: true, hasPackage: true,
-    styleText: '冷', analysis, mvPackage: pkg, durationSec: 20, mode: 'create',
-  };
-  const edited = AD.runMvAssistantTurn({ message: '第2段太长了', state, modelText: null, confirmed: false });
-  ok(edited.executed === 'edit_shot' && edited.needsConfirm === false, '改提示词不应被当成花钱：' + edited.executed);
-  ok(edited.state.mvPackage.scenes[1].awaitingConfirm, '被点名的段应停在待确认');
-  ok(edited.state.mvPackage.scenes[0].shots[0].videoPrompt === pkg.scenes[0].shots[0].videoPrompt, '助手改了一段却动了另一段');
-  ok(AD.assistantStateDigest(edited.state).scenes[1].awaitingConfirm === true, '下一轮读不到刚才的修改');
-  const blocked = AD.runMvAssistantTurn({ message: '生成全部', state: edited.state, confirmed: false });
-  ok(blocked.needsConfirm === true && blocked.executed == null && !blocked.clientJob, '未确认就发出了生成');
-  ok(blocked.preview && blocked.preview.count === edited.state.mvPackage.scenes.length, '确认卡没有段数');
-  const allowed = AD.runMvAssistantTurn({
-    message: '生成全部', state: edited.state, confirmed: true,
-    modelText: JSON.stringify({ say: '开始', tool: 'generate', args: { scope: 'all' } }),
+  const songDigest = AD.canvasDigest({
+    nodes: { a1: { id: 'a1', type: 'audio', x: 0, y: 0, data: { label: '歌', assetId: 'song' } } },
+    edges: [],
+  }, ['a1']);
+  const shot = AD.keywordCanvasAction('第2段太长了', songDigest, 'a1');
+  ok(shot.tool === 'canvas_music_timeline_edit' && shot.args.sceneIndex === 1 && shot.args.nodeId === 'a1', '改某一段没有走统一助手：' + JSON.stringify(shot));
+  ok(AD.gateCanvasAction(shot, { digest: songDigest }).allow === true, '改提示词被当成花钱');
+  const styled = AD.keywordCanvasAction('做一个搞笑风的 MV', songDigest, 'a1');
+  ok(styled.tool === 'canvas_music_timeline' && /搞笑/.test(styled.args.style), '风格没有交给时间轴：' + JSON.stringify(styled));
+  const refAct = AD.keywordCanvasAction('用这张做参考', songDigest, 'a1', [{ kind: 'image', assetId: 'face-1', name: '脸.png' }]);
+  ok(refAct.tool === 'canvas_create_node' && refAct.args.assetId === 'face-1' && refAct.args.type === 'image', '附件没有变成参考节点');
+  const songAct = AD.keywordCanvasAction('分析这首歌', songDigest, '', [{ kind: 'audio', assetId: 'song-9', name: '歌.mp3' }]);
+  ok(songAct.tool === 'canvas_create_node' && songAct.args.type === 'audio' && songAct.args.assetId === 'song-9', '附件歌曲没有变成音频节点');
+  const marker = 'data:image/png;base64,iVBORw0KGgoASSIST';
+  const audioMark = 'data:audio/wav;base64,UklGRiASSIST';
+  const videoMark = 'data:video/mp4;base64,AAAAASSIST';
+  const mediaBody = AD.buildOmniTextBody({
+    model: 'qwen3-omni-flash',
+    system: 'sys',
+    user: '看这三份',
+    parts: [
+      { kind: 'image', url: marker },
+      { kind: 'audio', url: audioMark, format: 'wav' },
+      { kind: 'video', url: videoMark },
+    ],
   });
-  ok(allowed.needsConfirm === false && allowed.clientJob === 'generate', '确认后仍不放行生成');
-  const styled = AD.runMvAssistantTurn({ message: '做一个搞笑风的 MV', state: { hasAudio: true }, confirmed: false });
-  ok(styled.executed === 'set_style' && /搞笑/.test(styled.state.styleText), '风格没有写进节点状态');
-  ok(AD.nextAutoStep({ hasAudio: true }).tool === 'analyze' && AD.nextAutoStep({ hasAudio: true }).spends === false, '自动推进不应第一步就生成');
-  const parsed = AD.parseAssistantAction('说明\n{"say":"只改这一镜","tool":"edit_shot","args":{"sceneIndex":0,"complaint":"多了一个人"}}');
-  ok(parsed && parsed.tool === 'edit_shot' && parsed.spends === false, '模型返回的工具没有解析出来');
+  const packed = JSON.stringify(mediaBody);
+  ok(packed.includes(marker) && packed.includes('image_url') && packed.includes(audioMark) && packed.includes('input_audio') && packed.includes(videoMark) && packed.includes('video_url'), '全模态请求没有带上图片、音频和视频');
+  ok(mediaBody.stream === true && JSON.stringify(mediaBody.modalities) === '["text"]', '带附件时仍要流式并且只回文字');
+  const gen = AD.imageRefPayload([marker], 'generations');
+  ok(gen.image && gen.image[0] === marker, '同一张图没有进入图片生成请求');
+  const harness = AD.assistantPlannerRoute(null);
+  ok(/不接受图片/.test(AD.rejectOmniAttachments(harness, [{ kind: 'image', assetId: 'face-1' }])) && !AD.rejectOmniAttachments({ route: 'omni' }, [{ kind: 'image' }]), '文本模型没有在发送前拒绝图片');
+  const kept = AD.assistantHistoryAttachments([{ kind: 'image', assetId: 'face-1', name: '脸', mime: 'image/png', url: marker }]);
+  ok(kept.length === 1 && kept[0].assetId === 'face-1' && !JSON.stringify(kept).includes('base64'), '历史里留下了图片正文');
   const sg = AD.assistantPlannerRoute({
     model: 'qwen3-omni-flash',
     baseUrl: 'https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1',
@@ -340,11 +351,10 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(/过于频繁/.test(AD.explainModelError({ status: 429, message: 'rate limit' }, sg).brief), '429 没有翻成限流');
   ok(/超时/.test(AD.explainModelError({ message: 'The request timed out' }, sg).brief), '超时没有翻成中文');
   const hostSrc = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
-  const turnStart = hostSrc.indexOf('async audioAssistantTurn');
-  const turnEnd = hostSrc.indexOf('async audioPlanStoryboard', turnStart);
-  const turnSrc = hostSrc.slice(turnStart, turnEnd);
-  ok(turnSrc.includes('buildOmniTextBody') && turnSrc.includes("route.route === 'omni'"), '助手规划没有走音频理解请求');
-  const omniBranch = turnSrc.split("route.route === 'omni'")[1].split('} else {')[0];
+  ok(!hostSrc.includes('audioAssistantTurn') && !hostSrc.includes('runMvAssistantTurn'), '音频节点助手的接口还在');
+  const turnSrc = hostSrc.slice(hostSrc.indexOf('async canvasAssistantTurn'), hostSrc.indexOf('async audioPlanStoryboard'));
+  ok(turnSrc.includes('rejectOmniAttachments') && turnSrc.includes('parts: mediaParts'), '统一助手没有在拒绝之后才把附件放进请求');
+  const omniBranch = turnSrc.split("route.route === 'omni'")[1].split('} else if (step === 0)')[0];
   ok(omniBranch && !omniBranch.includes('complete('), '配了音频理解时仍会改走默认文本模型');
   const clientSrc = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
   const analyzeFn = clientSrc.slice(clientSrc.indexOf('async function genAudioNode'), clientSrc.indexOf('async function genStoryboardNode'));
@@ -657,8 +667,8 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   ok(!/await complete\(/.test(fn.slice(0, fn.indexOf('} else if (step === 0)'))), '配了全模态时画布助手仍调用 Harness');
   const clientSrc2 = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
   const audioBody = clientSrc2.slice(clientSrc2.indexOf('function AudioNodeBody'), clientSrc2.indexOf('function nodeBody'));
-  ok(!audioBody.includes('data-tl-agent-panel') && audioBody.includes('s.assistantOpen = true'), '音乐节点仍留着第二套助手');
-  ok(clientSrc2.includes("data-canvas-assistant': 'open'") && clientSrc2.includes('canvasAssistantTurn'), '画布上没有全局助手');
+  ok(!audioBody.includes('data-tl-agent') && !clientSrc2.includes('audioAssistantTurn'), '音乐节点仍留着第二套助手');
+  ok(clientSrc2.includes("data-canvas-assistant': 'open'") && clientSrc2.includes('data-assist-float') && clientSrc2.includes('canvasAssistantTurn'), '画布上没有可移动的统一助手');
 }
 
 // ---------- 对话工具：分析 → 分镜 → 成片声轨 ----------
@@ -681,6 +691,10 @@ const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
   const created = await byName.get('canvas_create_project').execute({ name: '音频MV测试' }, {});
   const projectId = created.projectId;
   ok(!!projectId, '没有建出项目');
+  const pic = await byName.get('canvas_create_node').execute({ projectId, type: 'image', name: '参考图', assetId: 'face-1' }, {});
+  const clip = await byName.get('canvas_create_node').execute({ projectId, type: 'video', name: '镜头', assetId: 'clip-1' }, {});
+  const withAssets = JSON.parse(fs.readFileSync(path.join(process.env.DSH_IC_PROJECTS_DIR, projectId + '.json'), 'utf8'));
+  ok(withAssets.nodes[pic.nodeId].data.assetId === 'face-1' && withAssets.nodes[clip.nodeId].data.assetId === 'clip-1', '附件没有写进图片或视频节点');
   const energy = [];
   for (let i = 0; i < 40; i++) energy.push(i % 5 === 0 ? 0.9 : 0.1);
   const analyzed = await byName.get('canvas_analyze_audio').execute({

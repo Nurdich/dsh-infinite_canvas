@@ -1211,12 +1211,18 @@ function revealCanvasInRight() {
       'caPh': '跟助手说，例如：把选中的节点改一下',
       'caNone': '未选中节点',
       'caHide': '收起',
+      'caEmpty': '可以改选中的节点、连线、出图，或听一首歌。图片、音频和视频可以拖进来，也可以把节点拖到这里。',
+      'caAttach': '附件',
+      'caMic': '录音',
+      'caMicStop': '停止',
+      'caUseSel': '用选中的',
+      'caNoMic': '这个环境没有麦克风',
+      'caTooBig': '文件超过 8MB，没有附上',
+      'caNeedFile': '这个节点还没有图片、音频或视频文件',
+      'caBadKind': '只接受图片、音频或视频',
+      'caNoRoot': '未设置数据根目录，附件无法保存',
       'tlAgent': '助手',
-      'tlAgentPh': '跟助手说，例如：做一个搞笑风的 MV',
-      'tlAgentAuto': '自动推进',
       'tlAgentConfirm': '确认',
-      'tlAgentRevise': '修改',
-      'tlAgentSpend': '将生成',
       'tlReplaceAudio': '更换歌曲',
       'tlImport': '导入原片',
       'tlKeep': '保留原片',
@@ -2311,12 +2317,18 @@ function revealCanvasInRight() {
       'caPh': 'Tell the assistant, for example: edit the selected node',
       'caNone': 'Nothing selected',
       'caHide': 'Hide',
+      'caEmpty': 'Edit the selection, connect nodes, generate, or listen to a song. Drop an image, audio, video, or a canvas node here.',
+      'caAttach': 'Attach',
+      'caMic': 'Record',
+      'caMicStop': 'Stop',
+      'caUseSel': 'Use selection',
+      'caNoMic': 'No microphone in this environment',
+      'caTooBig': 'Larger than 8MB, not attached',
+      'caNeedFile': 'This node has no image, audio, or video file',
+      'caBadKind': 'Only image, audio, or video',
+      'caNoRoot': 'No data folder set, so the file was not saved',
       'tlAgent': 'Assistant',
-      'tlAgentPh': 'Tell the assistant, for example: make a funny MV',
-      'tlAgentAuto': 'Auto',
       'tlAgentConfirm': 'Confirm',
-      'tlAgentRevise': 'Change',
-      'tlAgentSpend': 'Will generate',
       'tlReplaceAudio': 'Replace song',
       'tlImport': 'Import source MV',
       'tlKeep': 'Keep original',
@@ -3108,30 +3120,29 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-edge.kind-audio{stroke:var(--dsw-alias-state-warn-primary);}
 .dshic-audio{width:100%;height:36px;display:block;}
 .dshic-mtl{display:flex;flex-direction:column;height:100%;min-height:0;background:#111;color:#f2f2f2;border-radius:0 0 12px 12px;overflow:hidden;position:relative;}
-.dshic-mtl-agent{position:absolute;top:28px;right:0;bottom:0;width:280px;background:#161616;border-left:1px solid #2a2a2a;display:flex;flex-direction:column;z-index:5;}
-.dshic-mtl-agent-model{flex:none;padding:6px 8px;background:#111;color:#aaa;font-size:11px;border-bottom:1px solid #2a2a2a;}
 .dshic-mtl-agent-detail{margin-top:4px;color:#aaa;font-size:11px;}
 .dshic-mtl-agent-detail pre{white-space:pre-wrap;margin:4px 0 0;color:#ccc;}
-.dshic-mtl-agent-log{flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:6px;}
-.dshic-mtl-agent-msg{background:#111;color:#eee;border-radius:8px;padding:6px 8px;font-size:12px;line-height:1.45;white-space:pre-wrap;}
-.dshic-mtl-agent-msg.is-user{background:#1c1c1c;}
-.dshic-mtl-agent-card{background:#111;border:1px solid #333;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;}
-.dshic-mtl-agent-form{display:flex;gap:4px;padding:8px;border-top:1px solid #2a2a2a;}
-.dshic-mtl-agent-form input{flex:1;min-width:0;height:28px;background:#111;color:#eee;border:1px solid #333;border-radius:6px;padding:0 8px;}
 .dshic-mtl-stream{max-height:160px;overflow:auto;white-space:pre-wrap;margin:0;background:#111;color:#ececec;border:1px solid #2a2a2a;border-radius:8px;padding:8px;font-size:12px;line-height:1.45;}
 .dshic-mtl-think{background:#111;color:#ccc;border:1px solid #2a2a2a;border-radius:8px;padding:6px 8px;font-size:12px;}
 .dshic-mtl-think pre{white-space:pre-wrap;margin:4px 0 0;}
-.dshic-assist{flex:none;width:300px;display:flex;flex-direction:column;min-height:0;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);border-left:1px solid var(--dshic-line2);}
-.dshic-assist-hd{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1);font-size:12px;}
+.dshic-assist{position:absolute;z-index:40;display:flex;flex-direction:column;min-height:0;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);border:1px solid var(--dshic-line2);border-radius:10px;overflow:hidden;}
+.dshic-assist.is-min{width:auto;height:auto;overflow:visible;}
+.dshic-assist-hd{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-1);font-size:12px;cursor:grab;}
+.dshic-assist-model{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;opacity:.8;}
 .dshic-assist-chip{flex:none;font-size:11px;padding:4px 10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);}
 .dshic-assist-log{flex:1;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:6px;min-height:0;}
 .dshic-assist-msg{font-size:12px;line-height:1.45;white-space:pre-wrap;}
 .dshic-assist-msg.is-user{color:var(--dsw-alias-fg-primary);}
 .dshic-assist-step{display:block;width:100%;text-align:left;font-size:11px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-fg-primary);border:1px solid var(--dshic-line2);border-radius:6px;padding:4px 6px;cursor:pointer;}
 .dshic-assist-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dshic-line2);border-radius:8px;padding:8px;font-size:12px;display:flex;flex-direction:column;gap:6px;}
-.dshic-assist-form{flex:none;display:flex;gap:6px;padding:8px;background:var(--dsw-alias-bg-layer-1);}
+.dshic-assist-form{flex:none;display:flex;flex-direction:column;gap:6px;padding:8px;background:var(--dsw-alias-bg-layer-1);}
+.dshic-assist-row{display:flex;gap:6px;align-items:center;}
+.dshic-assist-files{display:flex;flex-wrap:wrap;gap:4px;}
+.dshic-assist-file{display:flex;align-items:center;gap:4px;max-width:100%;border:1px solid var(--dshic-line2);border-radius:6px;padding:2px 4px;background:var(--dsw-alias-bg-base);font-size:11px;}
+.dshic-assist-file img{width:28px;height:28px;object-fit:cover;border-radius:4px;}
+.dshic-assist-resize{position:absolute;right:0;bottom:0;width:14px;height:14px;cursor:nwse-resize;}
+.dshic-assist-empty{font-size:12px;line-height:1.5;color:var(--dsw-alias-fg-primary);}
 .dshic-assist-form input{flex:1;min-width:0;height:28px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-fg-primary);border:1px solid var(--dshic-line2);border-radius:6px;padding:0 8px;}
-.dshic-assist-tab{position:absolute;right:8px;top:8px;z-index:6;}
 .dshic-mtl-preview{flex:1;min-height:120px;background:#000;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;}
 .dshic-mtl-modes{flex:none;display:flex;background:#161616;border-bottom:1px solid #2a2a2a;}
 .dshic-mtl-modes button{flex:1;height:28px;border:0;background:#161616;color:#aaa;cursor:pointer;font-size:12px;}
@@ -4095,6 +4106,25 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
     function saveAssistantChat(pid, canvasId, chat) {
       lsSet(assistantStoreKey(pid, canvasId), Array.isArray(chat) ? chat.slice(-40) : []);
     }
+    /** 音频节点上的旧助手记录并进画布历史，只搬一次。搬完删掉节点上的那份。 */
+    function takeNodeAssistantChats(graph) {
+      const moved = [];
+      let changed = false;
+      for (const nd of Object.values((graph && graph.nodes) || {})) {
+        if (!nd || !nd.data || !Object.prototype.hasOwnProperty.call(nd.data, 'assistantChat')) continue;
+        const nodeChat = nd.data.assistantChat;
+        if (!nd.data.assistantMigrated && Array.isArray(nodeChat)) {
+          for (const m of nodeChat) {
+            if (!m || !m.text) continue;
+            moved.push({ role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text), at: m.at || Date.now() });
+          }
+        }
+        delete nd.data.assistantChat;
+        nd.data.assistantMigrated = true;
+        changed = true;
+      }
+      return { moved, changed };
+    }
     function saveGraphDoc(pid, graph, canvasId) {
       lsSet(LS_GRAPH + canvasDocKey(pid, canvasId == null ? DEFAULT_CANVAS_ID : canvasId), graph);
     }
@@ -4143,7 +4173,9 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
         s.graph = { nodes: doc.nodes || {}, edges: doc.edges || [], view: doc.view || { x: 60, y: 40, scale: 1 } };
         s.sel = new Set(); s.selEdge = null; s.composerId = null;
         s.assistantScope = null;
-        s.assistantChat = loadAssistantChat(S.activeId, next);
+        const taken = takeNodeAssistantChats(s.graph);
+        s.assistantChat = loadAssistantChat(S.activeId, next).concat(taken.moved).slice(-40);
+        if (taken.changed) saveAssistantChat(S.activeId, next, s.assistantChat);
         s.inlineEdit = null; // 切画布取消未提交的就地改名（它属于上一张画布）
         s.panelModal = null;
         V.x = s.graph.view.x; V.y = s.graph.view.y; V.scale = s.graph.view.scale;
@@ -9075,7 +9107,13 @@ function queueThumb(assetId) {
           if (pid === S.activeId) update((s) => { s.skillsTick = (s.skillsTick || 0) + 1; });
         }
       }
-      if (isActiveCanvas) update((s) => { s.graph = { nodes, edges: keep, view: s.graph.view, tombstones: tombOut, edgeTombstones: local.edgeTombstones || [] }; s.assetsTick++; });
+      const takenChats = takeNodeAssistantChats({ nodes });
+      if (isActiveCanvas) update((s) => {
+        s.graph = { nodes, edges: keep, view: s.graph.view, tombstones: tombOut, edgeTombstones: local.edgeTombstones || [] };
+        if (takenChats.moved.length) s.assistantChat = (s.assistantChat || []).concat(takenChats.moved).slice(-40);
+        s.assetsTick++;
+      });
+      if (isActiveCanvas && takenChats.moved.length) saveAssistantChat(pid, cid, S.assistantChat);
       if (isActiveCanvas) scheduleRepair(); // 启动同步落图后自愈被误置空的资产引用
     }
     async function hostSyncTick() {
@@ -10008,7 +10046,6 @@ function queueThumb(assetId) {
       selEdge: null,
       running: false,
       rightOpen: true,
-      assistantOpen: true,
       assistantScope: null,
       assistantChat: [],
       assistantBusy: false,
@@ -10136,10 +10173,123 @@ function queueThumb(assetId) {
         });
       } catch { /* 忽略 */ }
     }
+    const ASSIST_BYTE_CAP = 8 * 1024 * 1024;
+    function assistantKindOf(file) {
+      const t = String((file && file.type) || '').toLowerCase();
+      const n = String((file && file.name) || '').toLowerCase();
+      if (t.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/.test(n)) return 'image';
+      if (t.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg)$/.test(n)) return 'audio';
+      if (t.startsWith('video/') || /\.(mp4|mov|webm)$/.test(n)) return 'video';
+      return '';
+    }
+    function audioBufferToWav(buffer) {
+      const ch = buffer.numberOfChannels;
+      const rate = buffer.sampleRate;
+      const samples = buffer.length;
+      const dataLen = samples * ch * 2;
+      const out = new ArrayBuffer(44 + dataLen);
+      const view = new DataView(out);
+      const write = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+      write(0, 'RIFF');
+      view.setUint32(4, 36 + dataLen, true);
+      write(8, 'WAVE');
+      write(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, ch, true);
+      view.setUint32(24, rate, true);
+      view.setUint32(28, rate * ch * 2, true);
+      view.setUint16(32, ch * 2, true);
+      view.setUint16(34, 16, true);
+      write(36, 'data');
+      view.setUint32(40, dataLen, true);
+      const chans = [];
+      for (let c = 0; c < ch; c++) chans.push(buffer.getChannelData(c));
+      let off = 44;
+      for (let i = 0; i < samples; i++) {
+        for (let c = 0; c < ch; c++) {
+          const s = Math.max(-1, Math.min(1, chans[c][i]));
+          view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+          off += 2;
+        }
+      }
+      return new Blob([out], { type: 'audio/wav' });
+    }
+    async function assistantFileToAsset(file) {
+      const kind = assistantKindOf(file);
+      if (!kind) throw new Error(T('caBadKind'));
+      let blob = file;
+      if (kind === 'image') blob = await shrinkBlob(file, 1280);
+      if (blob.size > ASSIST_BYTE_CAP) throw new Error(T('caTooBig'));
+      if (!S.dataRoot) throw new Error(T('caNoRoot'));
+      return saveAssetRecord(S.activeId, kind, blob, { name: file.name || kind, source: 'assistant' });
+    }
+    async function assistantPayload(list) {
+      const out = [];
+      for (const a of list || []) {
+        const blob = await assetBlob(a.assetId);
+        if (!blob) throw new Error(T('caNeedFile'));
+        const url = a.kind === 'image' ? await blobToDataUrlScaled(blob, 1024) : await blobToDataUrl(blob);
+        if (String(url).length > 12 * 1024 * 1024) throw new Error(T('caTooBig'));
+        const format = String((a.mime || blob.type || '').split('/')[1] || '').split(';')[0];
+        out.push({ kind: a.kind, name: a.name || '', mime: a.mime || blob.type || '', assetId: a.assetId, url, format });
+      }
+      return out;
+    }
+    function readAssistFrame() {
+      const base = { x: 52, y: 12, w: 340, h: 480, collapsed: false };
+      try {
+        const raw = JSON.parse(localStorage.getItem('dshic.assist.frame') || 'null');
+        if (raw && typeof raw === 'object') return { ...base, ...raw, collapsed: !!raw.collapsed };
+      } catch { /* 忽略 */ }
+      return base;
+    }
+    function clampAssistFrame(f, box) {
+      const bw = Math.max(280, (box && box.width) || 960);
+      const bh = Math.max(200, (box && box.height) || 640);
+      const w = Math.max(200, Math.min(480, bw - 60, Number(f.w) || 340));
+      const h = Math.max(180, Math.min(bh - 16, Number(f.h) || 480));
+      let x = Number.isFinite(Number(f.x)) ? Number(f.x) : 52;
+      let y = Number.isFinite(Number(f.y)) ? Number(f.y) : 12;
+      x = Math.max(52, Math.min(Math.max(52, bw - w - 8), x));
+      y = Math.max(8, Math.min(Math.max(8, bh - 48), y));
+      return { x, y, w, h, collapsed: !!f.collapsed };
+    }
+    function snapAssistFrame(f, box) {
+      const next = { ...f };
+      const bw = (box && box.width) || 960;
+      if (next.x < 80) next.x = 52;
+      else if (next.x > bw - next.w - 28) next.x = Math.max(52, bw - next.w - 8);
+      return clampAssistFrame(next, box);
+    }
+    function writeAssistFrame(f) {
+      try { localStorage.setItem('dshic.assist.frame', JSON.stringify({ x: f.x, y: f.y, w: f.w, h: f.h, collapsed: !!f.collapsed })); } catch { /* 忽略 */ }
+    }
+    function assistBox() {
+      const el = document.querySelector('.dshic-canvas');
+      if (!el) return { width: 960, height: 640 };
+      const r = el.getBoundingClientRect();
+      return { width: r.width || 960, height: r.height || 640 };
+    }
     async function sendCanvasAssistant(message, extra) {
       const text = String(message || '').trim();
-      if (!text && !(extra && extra.confirmed)) return;
+      const draftFiles = (extra && extra.attachments) || [];
+      if (!text && !draftFiles.length && !(extra && extra.confirmed)) return;
       if (!S.activeId) return;
+      const cfgPeek = resolveAudioModelCfg(loadSettings(), '');
+      const omniReady = !!(cfgPeek && cfgPeek.model && cfgPeek.baseUrl && cfgPeek.apiKey);
+      if (draftFiles.length && !omniReady) {
+        const names = { image: '图片', audio: '音频', video: '视频' };
+        const say = '当前模型不接受' + [...new Set(draftFiles.map((a) => names[a.kind] || a.kind))].join('、') + '。没有发送，也没有当成它看见了。';
+        update((s) => {
+          s.assistantChat = (s.assistantChat || []).concat([
+            { role: 'user', text, attachments: draftFiles.map((a) => ({ kind: a.kind, assetId: a.assetId, name: a.name || '', mime: a.mime || '' })), at: Date.now() },
+            { role: 'assistant', text: say, at: Date.now() },
+          ]).slice(-40);
+        });
+        saveAssistantChat(S.activeId, activeCanvasId(), S.assistantChat);
+        return;
+      }
       const progressId = 'ca-' + Date.now();
       update((s) => { s.assistantBusy = true; s.assistantLive = { text: '', reasoning: '', line: T('tlConnecting'), retryText: text }; });
       const stopPoll = pollOmniProgress(progressId, (p) => {
@@ -10155,15 +10305,17 @@ function queueThumb(assetId) {
       });
       try {
         await flushSave();
+        const attachments = await assistantPayload(draftFiles);
         const cfg = resolveAudioModelCfg(loadSettings(), '');
         const r = await hostRpc('canvasAssistantTurn', {
           projectId: S.activeId,
           canvasId: activeCanvasId(),
           message: text,
           selection: [...S.sel],
-          scopeId: S.assistantScope || '',
+          scopeId: S.assistantScope || (S.sel.size === 1 ? [...S.sel][0] : ''),
           confirmed: !!(extra && extra.confirmed),
           pending: (extra && extra.pending) || null,
+          attachments,
           progressId,
           provider: cfg ? { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, extra: cfg.extra || '', analysisIdleSec: cfg.analysisIdleSec || '' } : null,
         }, analysisOuterMaxMs());
@@ -10238,7 +10390,12 @@ function queueThumb(assetId) {
       }
       if (stale) { try { saveGraphDoc(S.activeId, S.graph); } catch { /* 忽略 */ } }
       V.x = S.graph.view.x; V.y = S.graph.view.y; V.scale = S.graph.view.scale;
-      S.assistantChat = loadAssistantChat(S.activeId, S.activeCanvasId);
+      const taken = takeNodeAssistantChats(S.graph);
+      S.assistantChat = loadAssistantChat(S.activeId, S.activeCanvasId).concat(taken.moved).slice(-40);
+      if (taken.changed) {
+        try { saveGraphDoc(S.activeId, S.graph, S.activeCanvasId); } catch { /* 忽略 */ }
+        saveAssistantChat(S.activeId, S.activeCanvasId, S.assistantChat);
+      }
       S.ready = true;
       // 预热设定集快照：页面加载时视本地版本为"已同步"，避免把旧版本推回覆盖对话侧的新设定
       for (const p of S.projects) biblePushSnap.set(p.id, bibleSnapshot(p.id));
@@ -10256,7 +10413,9 @@ function queueThumb(assetId) {
         s.sel = new Set(); s.selEdge = null;
         s.composerId = null;
         s.assistantScope = null;
-        s.assistantChat = loadAssistantChat(pid, nextCanvas);
+        const taken = takeNodeAssistantChats(s.graph);
+        s.assistantChat = loadAssistantChat(pid, nextCanvas).concat(taken.moved).slice(-40);
+        if (taken.changed) saveAssistantChat(pid, nextCanvas, s.assistantChat);
         s.inlineEdit = null; // 切项目取消未提交的就地改名（它属于上一个项目）
         // 注意：不复位 s.running —— 否则运行中切项目会让"运行工作流"重新可点，并发跑同一节点
         V.x = s.graph.view.x; V.y = s.graph.view.y; V.scale = s.graph.view.scale;
@@ -12990,6 +13149,14 @@ function queueThumb(assetId) {
             })
           : h('span', {
               className: 'dshic-node-title', title: T('renameHint'),
+              draggable: true,
+              onDragStart: (e) => {
+                e.stopPropagation();
+                try {
+                  e.dataTransfer.setData('application/x-dshic-node', n.id);
+                  e.dataTransfer.effectAllowed = 'copy';
+                } catch { /* 忽略 */ }
+              },
               onDoubleClick: (e) => { e.stopPropagation(); startRename(); },
             }, n.data.label || TYPE_LABEL()[nt]),
         // 旧类型小标签（原型 .legacy）：只有旧项目里记录了原始类型时才显示
@@ -16160,29 +16327,7 @@ function queueThumb(assetId) {
         h('input', { ref: vidFileRef, type: 'file', accept: 'video/*,.mp4,.mov,.webm', style: { display: 'none' }, onChange: importSource }),
         h('div', { className: 'dshic-mtl-modes' },
           h('button', { type: 'button', className: mode === 'create' ? 'is-on' : '', 'data-tl-mode-create': '1', onClick: () => setMode('create') }, T('tlModeCreate')),
-          h('button', { type: 'button', className: mode === 'remix' ? 'is-on' : '', 'data-tl-mode-remix': '1', onClick: () => setMode('remix') }, T('tlModeRemix')),
-          h('button', {
-            type: 'button', className: 'is-on', 'data-tl-agent': '1',
-            onClick: () => {
-              update((s) => {
-                s.assistantOpen = true;
-                s.assistantScope = n.id;
-                s.sel = new Set([n.id]);
-                const nodeChat = n.data && n.data.assistantChat;
-                if (!n.data.assistantMigrated && Array.isArray(nodeChat) && nodeChat.length) {
-                  const moved = nodeChat.map((m) => ({
-                    role: m.role === 'agent' ? 'assistant' : (m.role || 'assistant'),
-                    text: m.text || '',
-                    at: Date.now(),
-                  }));
-                  s.assistantChat = (s.assistantChat || []).concat(moved).slice(-40);
-                  const nd = s.graph.nodes[n.id];
-                  if (nd) nd.data.assistantMigrated = true;
-                }
-              });
-              saveAssistantChat(S.activeId, activeCanvasId(), S.assistantChat);
-            },
-          }, T('tlAgent'))),
+          h('button', { type: 'button', className: mode === 'remix' ? 'is-on' : '', 'data-tl-mode-remix': '1', onClick: () => setMode('remix') }, T('tlModeRemix'))),
         url ? h('audio', {
           ref: audioRef, src: url, preload: 'metadata',
           onLoadedMetadata: (e) => {
@@ -22898,8 +23043,22 @@ const DIRECTOR_KEY_HELP = [
       }
     }
 
+    function AssistFileChip({ file, onRemove }) {
+      const url = useAssetUrl(file && file.kind === 'image' ? file.assetId : '');
+      return h('span', { className: 'dshic-assist-file', 'data-assist-file': file.kind || '' },
+        url ? h('img', { src: url, alt: '' }) : null,
+        h('span', null, file.name || file.kind),
+        onRemove ? h('button', { type: 'button', className: 'dshic-mini', onClick: onRemove }, '×') : null);
+    }
     function CanvasAssistant() {
       const [draft, setDraft] = useState('');
+      const [files, setFiles] = useState([]);
+      const [frame, setFrame] = useState(readAssistFrame);
+      const [recording, setRecording] = useState(false);
+      const fileRef = useRef(null);
+      const recRef = useRef(null);
+      const frameRef = useRef(frame);
+      frameRef.current = frame;
       const selection = [...S.sel];
       const digestNodes = Object.values(S.graph.nodes || {}).map((n) => ({
         id: n.id,
@@ -22919,6 +23078,23 @@ const DIRECTOR_KEY_HELP = [
           : cfg && /dashscope\.aliyuncs\.com/i.test(cfg.baseUrl || '') ? '北京' : '';
       const modelLine = cfg && cfg.model ? (cfg.model + (place ? '（' + place + '）' : '')) : T('tlNeedOmni');
       useEffect(() => {
+        const onResize = () => setFrame((cur) => {
+          const next = clampAssistFrame(cur, assistBox());
+          writeAssistFrame(next);
+          return next;
+        });
+        window.addEventListener('resize', onResize);
+        onResize();
+        return () => window.removeEventListener('resize', onResize);
+      }, []);
+      useEffect(() => {
+        const taken = takeNodeAssistantChats(S.graph);
+        if (taken.changed) {
+          update((s) => {
+            if (taken.moved.length) s.assistantChat = (s.assistantChat || []).concat(taken.moved).slice(-40);
+          });
+          saveAssistantChat(S.activeId, activeCanvasId(), S.assistantChat);
+        }
         if (!S.activeId || (S.assistantChat || []).length) return undefined;
         let stop = false;
         hostRpc('projectsGet', { id: S.activeId, canvasId: activeCanvasId() }).then((full) => {
@@ -22928,22 +23104,133 @@ const DIRECTOR_KEY_HELP = [
           saveAssistantChat(S.activeId, activeCanvasId(), full.assistantChat);
         }).catch(() => {});
         return () => { stop = true; };
-      }, [S.activeId, S.activeCanvasId, (S.assistantChat || []).length]);
-      if (!S.assistantOpen) {
-        return h('aside', { className: 'dshic-assist', style: { width: 48 }, 'data-canvas-assistant': 'closed' },
-          h('button', {
-            type: 'button', className: 'dshic-mini',
-            onClick: () => update((s) => { s.assistantOpen = true; }),
-          }, T('tlAgent')));
+      }, [S.activeId, S.activeCanvasId]);
+      function remember(next) {
+        writeAssistFrame(next);
+        setFrame(next);
       }
-      return h('aside', { className: 'dshic-assist', 'data-canvas-assistant': 'open' },
-        h('div', { className: 'dshic-assist-hd' },
+      function onHeadDown(e) {
+        if (e.target && e.target.closest && e.target.closest('button')) return;
+        e.stopPropagation();
+        e.preventDefault();
+        const origin = frameRef.current;
+        const sx = e.clientX;
+        const sy = e.clientY;
+        const move = (ev) => setFrame(clampAssistFrame({ ...origin, x: origin.x + ev.clientX - sx, y: origin.y + ev.clientY - sy }, assistBox()));
+        const up = () => {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          setFrame((cur) => {
+            const next = snapAssistFrame(cur, assistBox());
+            writeAssistFrame(next);
+            return next;
+          });
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      }
+      function onResizeDown(e) {
+        e.stopPropagation();
+        e.preventDefault();
+        const origin = frameRef.current;
+        const sx = e.clientX;
+        const sy = e.clientY;
+        const move = (ev) => setFrame(clampAssistFrame({ ...origin, w: origin.w + ev.clientX - sx, h: origin.h + ev.clientY - sy }, assistBox()));
+        const up = () => {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          setFrame((cur) => { writeAssistFrame(cur); return cur; });
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      }
+      async function addLocalFile(file) {
+        try {
+          const rec = await assistantFileToAsset(file);
+          const kind = assistantKindOf(file);
+          setFiles((prev) => prev.concat([{ id: rec.id, kind, name: rec.name || file.name || kind, mime: rec.mime || file.type || '', assetId: rec.id }]).slice(-6));
+        } catch (err) { toast(String((err && err.message) || err)); }
+      }
+      function addNodeFile(id) {
+        const n = S.graph.nodes && S.graph.nodes[id];
+        if (!n || !n.data || !n.data.assetId || !['image', 'video', 'audio'].includes(n.type)) { toast(T('caNeedFile')); return; }
+        setFiles((prev) => {
+          if (prev.some((f) => f.assetId === n.data.assetId)) return prev;
+          return prev.concat([{ id: n.data.assetId, kind: n.type, name: n.data.label || n.type, mime: '', assetId: n.data.assetId }]).slice(-6);
+        });
+      }
+      async function onDropFiles(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const nid = e.dataTransfer && e.dataTransfer.getData('application/x-dshic-node');
+        if (nid) { addNodeFile(nid); return; }
+        const list = (e.dataTransfer && e.dataTransfer.files) || [];
+        for (const file of list) await addLocalFile(file);
+      }
+      async function toggleMic() {
+        if (recRef.current) { try { recRef.current.stop(); } catch { /* 忽略 */ } return; }
+        const md = navigator.mediaDevices;
+        if (!md || !md.getUserMedia || typeof MediaRecorder === 'undefined') { toast(T('caNoMic')); return; }
+        try {
+          const stream = await md.getUserMedia({ audio: true });
+          const rec = new MediaRecorder(stream);
+          const chunks = [];
+          rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+          rec.onstop = async () => {
+            stream.getTracks().forEach((t) => t.stop());
+            recRef.current = null;
+            setRecording(false);
+            const raw = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+            try {
+              const Ctx = window.AudioContext || window.webkitAudioContext;
+              const ctx = new Ctx();
+              const buf = await ctx.decodeAudioData(await raw.arrayBuffer());
+              const wav = audioBufferToWav(buf);
+              if (ctx.close) ctx.close();
+              await addLocalFile(new File([wav], '录音.wav', { type: 'audio/wav' }));
+            } catch { toast(T('caBadKind')); }
+          };
+          recRef.current = rec;
+          rec.start();
+          setRecording(true);
+        } catch { toast(T('caNoMic')); }
+      }
+      function sendDraft() {
+        const sending = files.slice();
+        sendCanvasAssistant(draft, { attachments: sending });
+        setDraft('');
+        setFiles([]);
+      }
+      const boxStyle = { left: frame.x, top: frame.y, width: frame.w, height: frame.h };
+      if (frame.collapsed) {
+        return h('aside', {
+          className: 'dshic-assist is-min',
+          'data-canvas-assistant': 'closed',
+          'data-assist-float': '1',
+          style: { left: frame.x, top: frame.y },
+          onPointerDown: (e) => e.stopPropagation(),
+        }, h('button', {
+          type: 'button', className: 'dshic-mini',
+          onClick: () => remember({ ...frameRef.current, collapsed: false }),
+        }, T('tlAgent')));
+      }
+      const logEmpty = !(S.assistantChat || []).length && !S.assistantLive;
+      return h('aside', {
+        className: 'dshic-assist',
+        'data-canvas-assistant': 'open',
+        'data-assist-float': '1',
+        style: boxStyle,
+        onPointerDown: (e) => e.stopPropagation(),
+      },
+        h('div', { className: 'dshic-assist-hd', onPointerDown: onHeadDown },
           h('strong', null, T('caTitle')),
-          h('span', { style: { flex: 1, fontSize: 11, opacity: 0.8 } }, modelLine),
-          h('button', { type: 'button', className: 'dshic-mini', onClick: () => update((s) => { s.assistantOpen = false; }) }, T('caHide'))),
+          h('span', { className: 'dshic-assist-model', title: modelLine }, modelLine),
+          h('button', { type: 'button', className: 'dshic-mini', onClick: () => remember({ ...frameRef.current, collapsed: true }) }, T('caHide'))),
         h('div', { className: 'dshic-assist-chip', 'data-canvas-assistant-chip': '1' }, chip),
         h('div', { className: 'dshic-assist-log' },
+          logEmpty ? h('div', { className: 'dshic-assist-empty', 'data-canvas-assistant-empty': '1' }, chip, T('caEmpty')) : null,
           (S.assistantChat || []).map((msg, i) => h('div', { key: 'a' + i, className: 'dshic-assist-msg' + (msg.role === 'user' ? ' is-user' : '') },
+            (msg.attachments || []).length ? h('div', { className: 'dshic-assist-files' }, (msg.attachments || []).map((a, k) => h(AssistFileChip, { key: 'h' + k, file: a }))) : null,
             msg.reasoning ? h('details', { className: 'dshic-mtl-think', open: !!msg.live }, h('summary', null, T('caThinking')), h('pre', null, msg.reasoning)) : null,
             msg.text || '',
             (msg.steps || []).map((step, j) => h('button', {
@@ -22967,16 +23254,35 @@ const DIRECTOR_KEY_HELP = [
           S.assistantLive.reasoning ? h('details', { className: 'dshic-mtl-think', open: true }, h('summary', null, T('caThinking')), h('pre', null, S.assistantLive.reasoning)) : null,
           S.assistantLive.text || '',
           S.assistantLive.line ? h('div', { className: 'dshic-assist-chip' }, S.assistantLive.line) : null) : null,
-        h('div', { className: 'dshic-assist-form' },
-          h('input', {
-            'data-canvas-assistant-input': '1', value: draft, placeholder: T('caPh'),
-            onChange: (e) => setDraft(e.target.value),
-            onKeyDown: (e) => { if (e.key === 'Enter') { sendCanvasAssistant(draft); setDraft(''); } },
-          }),
-          h('button', {
-            type: 'button', className: 'dshic-mini', disabled: !!S.assistantBusy,
-            onClick: () => { sendCanvasAssistant(draft); setDraft(''); },
-          }, T('tlAgent'))));
+        h('div', {
+          className: 'dshic-assist-form',
+          'data-canvas-assistant-drop': '1',
+          onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); },
+          onDrop: onDropFiles,
+          onPaste: (e) => {
+            const items = (e.clipboardData && e.clipboardData.files) || [];
+            for (const file of items) addLocalFile(file);
+          },
+        },
+          files.length ? h('div', { className: 'dshic-assist-files' }, files.map((f) => h(AssistFileChip, {
+            key: f.id, file: f, onRemove: () => setFiles((prev) => prev.filter((x) => x.id !== f.id)),
+          }))) : null,
+          h('div', { className: 'dshic-assist-row' },
+            h('input', { ref: fileRef, type: 'file', accept: 'image/*,audio/*,video/*', multiple: true, style: { display: 'none' }, onChange: (e) => { const list = (e.target && e.target.files) || []; for (const file of list) addLocalFile(file); e.target.value = ''; } }),
+            h('button', { type: 'button', className: 'dshic-mini', onClick: () => fileRef.current && fileRef.current.click() }, T('caAttach')),
+            h('button', { type: 'button', className: 'dshic-mini', onClick: toggleMic }, recording ? T('caMicStop') : T('caMic')),
+            h('button', { type: 'button', className: 'dshic-mini', onClick: () => { for (const id of S.sel) addNodeFile(id); } }, T('caUseSel'))),
+          h('div', { className: 'dshic-assist-row' },
+            h('input', {
+              type: 'text', 'data-canvas-assistant-input': '1', value: draft, placeholder: T('caPh'),
+              onChange: (e) => setDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') sendDraft(); },
+            }),
+            h('button', {
+              type: 'button', className: 'dshic-mini', disabled: !!S.assistantBusy,
+              onClick: sendDraft,
+            }, T('tlAgent')))),
+        h('div', { className: 'dshic-assist-resize', onPointerDown: onResizeDown }));
     }
     function CanvasPage() {
       useApp();
@@ -23132,9 +23438,9 @@ const DIRECTOR_KEY_HELP = [
                 ),
               ),
             ) : null,
+            h(CanvasAssistant),
           ),
           S.rightOpen ? h(Rightbar) : null,
-          h(CanvasAssistant),
         ),
         h(StudioModal),          // 资产 + 设定集统一弹窗（单例；S.panelModal 控制）
         h(DirectorStage),        // 3D 导演台（全屏浮层；左侧图标列入口，S.directorOpen 控制）
