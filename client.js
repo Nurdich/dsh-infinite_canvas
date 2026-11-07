@@ -1330,6 +1330,23 @@ function revealCanvasInRight() {
       'dataRootMigratedDone': '已迁移',
       'dataRootMigrating': '迁移中',
       'dataRootUnsupported': '当前插件后台版本较旧（不支持数据根目录）：重启 Harness 后可用',
+      'autoTitle': '自动创作（实验）',
+      'autoOn': '已开启',
+      'autoOff': '已关闭',
+      'autoEnable': '开启',
+      'autoDisable': '关闭',
+      'autoCapsOk': '多智能体：可用',
+      'autoCapsNo': '多智能体：宿主未暴露会话服务（暂不可用）',
+      'autoOldHost': '宿主插件是旧版本（不支持自动创作开关）：完全重启 Harness 后可用',
+      'stageCurrent': '制作阶段',
+      'stageReadyYes': '可交付',
+      'stageReadyNo': '未就绪',
+      'stageBlockers': '阻塞',
+      'imageGenTitle': '桥接dsh-image-gen',
+      'imageGenStatusNo': 'dsh-image-gen模型·未配置',
+      'imageGenMissing': '未检测到 dsh-image-gen',
+      'imageGenStatusYes': 'dsh-image-gen模型·已配置',
+      'imageGenNoModel': '（未选择模型）',
       'dataRootSaved': '数据根目录已设置',
       'storageInfo': '存储',
       'storageDetails': '存储详情',
@@ -2436,6 +2453,23 @@ function revealCanvasInRight() {
       'dataRootMigratedDone': 'Migrated',
       'dataRootMigrating': 'Migrating',
       'dataRootUnsupported': 'The plugin backend is older and lacks data-root support — restart Harness to enable',
+      'autoTitle': 'Auto creation (experimental)',
+      'autoOn': 'On',
+      'autoOff': 'Off',
+      'autoEnable': 'Turn on',
+      'autoDisable': 'Turn off',
+      'autoCapsOk': 'Multi-agent: available',
+      'autoCapsNo': 'Multi-agent: host does not expose session services (unavailable)',
+      'autoOldHost': 'The plugin backend is older and lacks the auto-creation switch — fully restart Harness to enable',
+      'stageCurrent': 'Stage',
+      'stageReadyYes': 'deliverable',
+      'stageReadyNo': 'not ready',
+      'stageBlockers': 'blocked',
+      'imageGenTitle': 'Bridge: dsh-image-gen',
+      'imageGenStatusNo': 'dsh-image-gen models · not configured',
+      'imageGenMissing': 'dsh-image-gen not detected',
+      'imageGenStatusYes': 'dsh-image-gen models · configured',
+      'imageGenNoModel': '(no model)',
       'dataRootSaved': 'Data root set',
       'storageInfo': 'Storage',
       'storageDetails': 'Storage details',
@@ -3378,13 +3412,13 @@ body[data-ds-dark-theme] .dshic-inline-input{border-color:var(--dsw-alias-border
 .dshic-menu-item:hover{background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent));}
 body[data-ds-dark-theme] .dshic-menu{border-color:var(--dsw-alias-border-l2);}
 /* —— 会话↔画布绑定（composer 画布选择 chip）：与宿主会话输入行 chip 同一视觉语言 —— */
-.dshic-bind{position:relative;display:inline-flex;align-items:center;gap:2px;}
+.dshic-bind{position:relative;display:inline-flex;align-items:center;gap:2px;flex:0 1 auto;min-width:0;max-width:180px;}
 .dshic-bind-chip{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 10px;border-radius:10px;border:1px solid transparent;
-  background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;}
+  background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;}
 .dshic-bind-chip:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-3));color:var(--dsw-alias-label-primary);}
 .dshic-bind-chip.is-bound{color:var(--dsw-alias-label-primary);}
 .dshic-bind-ico{display:inline-flex;align-items:center;flex:none;opacity:.85;}
-.dshic-bind-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dshic-bind-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
 .dshic-bind-caret{font-size:10px;opacity:.75;flex:none;margin-left:2px;}
 .dshic-bind-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:70;max-height:340px;overflow:auto;min-width:240px;border-radius:12px;padding:4px;}
 .dshic-bind-sep{height:1px;background:var(--dsw-alias-border-l1);margin:4px 6px;}
@@ -3911,6 +3945,8 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
         imageStar: s.imageStar || '',
         videoStar: s.videoStar || '',
         audioStar: s.audioStar || '',
+        // dsh-image-gen 桥接：启用后画布不自配图片 API，直接走它的 /studio（密钥留在它宿主侧）
+        imageGen: { enabled: !!(s.imageGen && s.imageGen.enabled), provider: (s.imageGen && s.imageGen.provider) || '', model: (s.imageGen && s.imageGen.model) || '' },
         ttsApis: Array.isArray(s.ttsApis) ? s.ttsApis : [],
         ttsApiId: s.ttsApiId || '',
         lang: s.lang || '',
@@ -3979,7 +4015,9 @@ body[data-ds-dark-theme] .dshic-pick-item.is-on{background:color-mix(in srgb,var
       for (const p of settings.imageProviders || []) {
         for (const m of (p.models || [])) {
           if (!m || !m.id || !String(m.model || '').trim()) continue;
-          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '', size: p.size || '', responseFormat: p.responseFormat || '', mode: p.mode || 'generations', concurrency: p.concurrency || '' });
+          // viaImageGen/imageGenProvider 必须透传：生成侧靠它路由到 dsh-image-gen 的 /studio。
+          const via = !!(p.viaImageGen || m.viaImageGen);
+          out.push({ ref: p.id + '|' + m.id, providerId: p.id, providerName: p.name || p.id, modelId: m.id, model: String(m.model).trim(), baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', extra: p.extra || '', size: p.size || '', responseFormat: p.responseFormat || '', mode: p.mode || 'generations', concurrency: p.concurrency || '', ...(via ? { viaImageGen: true, imageGenProvider: m.viaImageGen || p.imageGenProvider || '' } : {}) });
         }
       }
       return out;
@@ -6248,6 +6286,46 @@ function queueThumb(assetId) {
       return null;
     }
 
+    /** dsh-image-gen 桥接生图：走它的 /studio 路由（密钥留在它宿主侧，前端零配置）。
+     *  GET 取模型清单由探测函数负责；这里只做 POST 生成 + 取图。返回 Blob（与 apiImage 同契约）。 */
+    async function apiGenBridge(prompt, refBlobs, g, opts) {
+      const cfg = g || {};
+      if (!cfg.provider || !cfg.model) throw new Error('dsh-image-gen 未选择服务商/模型（设置 → 图片模型 → 来自 dsh-image-gen）');
+      const refs = [];
+      for (const b of (refBlobs || []).slice(0, 4)) {
+        try {
+          const dataUrl = await blobToDataUrl(b);
+          const m = /^data:([^;]+);base64,(.+)$/.exec(String(dataUrl || ''));
+          if (m) refs.push({ mediaType: m[1], data: m[2] });
+        } catch { /* 单张参考图转换失败不阻塞 */ }
+      }
+      const body = {
+        mode: refs.length ? 'edit' : 'generate',
+        provider: cfg.provider,
+        model: cfg.model,
+        prompt: String(prompt || ''),
+        ratio: String((opts && opts.ratio) || '1:1'),
+        quality: String((opts && opts.quality) || 'high'),
+      };
+      if (refs.length) body.references = refs;
+      const res = await fetch('/plugins/dsh-image-gen/studio', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const raw = await res.text();
+      let json = null;
+      try { json = JSON.parse(raw); } catch { /* 非 JSON（网关页/空响应）走下面的错误 */ }
+      if (!res.ok || !json) {
+        throw new Error('dsh-image-gen 生成失败：' + ((json && (json.error || json.message)) || ('HTTP ' + res.status + (raw ? ' · ' + raw.slice(0, 160) : ''))));
+      }
+      if (json.error) throw new Error('dsh-image-gen 生成失败：' + json.error);
+      const att = (Array.isArray(json.items) && json.items[0] && json.items[0].attachment) || json.attachment;
+      if (!att) throw new Error('dsh-image-gen 未返回图片（响应缺少 attachment）');
+      const img = await fetch('/plugins/dsh-image-gen/image', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ attachment: att }),
+      });
+      if (!img.ok) throw new Error('读取 dsh-image-gen 生成的图片失败 HTTP ' + img.status);
+      return await img.blob();
+    }
     async function apiImage(prompt, refBlobs, s, opts) {
       if (opts && opts.imageSuffix && !String(prompt || '').includes(opts.imageSuffix)) {
         prompt = String(prompt || '').replace(/\s+$/, '') + '。' + opts.imageSuffix;
@@ -11939,8 +12017,9 @@ function queueThumb(assetId) {
             const lock = await buildShotLockText(lockKind, { medium: 'image' });
             if (lock) p = p + '\n' + lock;
           } catch { /* 技能包不可用时不影响生成 */ }
-          // 模型解析：节点选择优先，未指定路由到星标默认模型；都没有 = 明确报错（不再静默走演示模式）
+          // 模型解析：节点下拉里的「桥接dsh-image-gen」条目走 studio 生成（无需画布自配）；其余照旧
           const mcfg = resolveImageModelCfg(settings, nodeImageModelRef(n));
+          const useBridge = !!(mcfg && mcfg.viaImageGen);
           if (!mcfg) throw new Error(T('errNoImageModel'));
           // 张数（1–4）：同一提示词一次生成多张；历史条保留全部结果，节点显示最后一张
           const want = clamp(Number(n.data.imageCount) || 1, 1, 4);
@@ -11952,7 +12031,9 @@ function queueThumb(assetId) {
                 if (meta && meta.blob) meta.blob = await shrinkBlob(meta.blob, 768);
               }
             }
-            const blob = await apiImage(p, metas, mcfg, {
+            const blob = useBridge
+              ? await apiGenBridge(p, metas, { provider: mcfg.imageGenProvider, model: mcfg.model }, { ratio: n.data.ratio })
+              : await apiImage(p, metas, mcfg, {
               size: n.data.size, ratio: n.data.ratio, nodeExtra: n.data.imgExtra, imageSuffix: n.data.imageSuffix, warn: addWarn,
               // 任务式厂商（三宝图片）：任务 id 就是凭证——代理超时/页面关闭后仍可凭 id 回查（与视频同口径）
               onTask: (tid, qurl) => {
@@ -17343,7 +17424,7 @@ function queueThumb(assetId) {
       notify();
     }
 
-    /** 切片和提示词锁只在宿主 skill-pack.js。这里只取那一份。 */
+    /** 切片和提示词锁只在宿主 skill-pack.js。打斗节奏也在那一份里按题材决定。 */
     async function buildSkillPackText(kind, opts) {
       const o = opts || {};
       const pid = o.pid || S.activeId;
@@ -20374,6 +20455,28 @@ const DIRECTOR_KEY_HELP = [
     // ============================================================
     // 右侧边栏：项目 / 资产 / 设置
     // ============================================================
+    /** 制作阶段行（0.20.0）：当前画布的阶段 + 可交付/阻塞概览。旧宿主（无 RPC）整行隐藏，零打扰。 */
+    function ProductionStageRow({ projectId, canvasId }) {
+      const [st, setSt] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        const load = async () => {
+          try {
+            const r = await hostRpc('productionStatus', { projectId, canvasId });
+            if (alive && r && r.ok) setSt(r);
+          } catch { if (alive) setSt(null); } // 旧宿主/项目已删 → 静默隐藏
+        };
+        load();
+        const t = setInterval(load, 30000); // 阶段由工具事件推进，30s 轮询足够
+        return () => { alive = false; clearInterval(t); };
+      }, [projectId, canvasId]);
+      if (!st) return null;
+      const blockers = (st.blockers || []).length;
+      const readyText = st.ready ? T('stageReadyYes') : (blockers ? T('stageBlockers') + ' ' + blockers : T('stageReadyNo'));
+      return h('div', { className: 'dshic-hint', 'data-role': 'production-stage', style: { alignSelf: 'flex-start', padding: '2px 2px 0' } },
+        T('stageCurrent') + '：' + (st.stageZh || st.stage) + ' · ' + readyText);
+    }
+
     function ProjectsTab() {
       // 新建项目统一走左上角项目名下拉（「+ 新建项目…」），右栏只管理当前项目，不再放新建项目按钮
       const [delTarget, setDelTarget] = useState(null);
@@ -20530,6 +20633,8 @@ const DIRECTOR_KEY_HELP = [
           ? h('div', { key: 'emptystate', className: 'dshic-hint', style: { alignSelf: 'flex-start', padding: '6px 2px', maxWidth: 260 } },
               T('emptyProjectHint'))
           : null,
+        // 制作阶段行（0.20.0 阶段机）：当前画布的阶段 + 可交付/阻塞概览；旧宿主无 RPC 时整行隐藏
+        proj ? h(ProductionStageRow, { key: 'stage', projectId: proj.id, canvasId: activeCanvasId() === DEFAULT_CANVAS_ID ? null : activeCanvasId() }) : null,
         // 项目区域顶部：一行「+ 新建画布（纯图标）」+ 搜索框（放大镜内嵌在输入框右侧）
         // 折叠只折叠**下方画布列表**：搜索行始终可见（折叠不能把上方工具行一起吞掉）
         proj
@@ -21908,62 +22013,49 @@ const DIRECTOR_KEY_HELP = [
             ],
       );
     }
-    function SettingsTab() {
-      const [s, setS] = useState(loadSettings);
-      const apply = (fn) => {
-        setS((prev) => {
-          const next = JSON.parse(JSON.stringify(prev));
-          fn(next);
-          saveSettings(next);
-          return next;
-        });
+    /** 图片模型桥接卡（0.20.0）：检测 dsh-image-gen 并直接选用它的服务商/模型（密钥留在它宿主侧）。 */
+    /** 自动创作开关（实验）：只留开关与状态；入口在 Harness 原生对话框（canvas_auto_* 工具）。 */
+    function AutoModeCard() {
+      const [st, setSt] = useState(null);
+      const refresh = async () => {
+        try {
+          const r = await hostRpc('autoModeGet');
+          setSt({ enabled: !!r.enabled, caps: r.caps || null, oldHost: false, busy: false });
+        } catch {
+          setSt({ enabled: false, caps: null, oldHost: true, busy: false });
+        }
       };
-      const field = (label, value, onChange, placeholder, password) => h(Field, { label, value, onChange, placeholder, password });
-      return [
-        h('div', { key: 'lang', className: 'dshic-card' },
-          h('div', { className: 'dshic-row' }, Ic('text', 12), h('strong', { style: { fontSize: 12 } }, T('langLabel'))),
-          h('select', {
-            className: 'dshic-select', value: s.lang || '',
-            onChange: (e) => {
-              apply((d) => { d.lang = e.target.value; });
-              LANG_OVERRIDE = e.target.value;
-              notify();
-            },
-            onPointerDown: (e) => e.stopPropagation(),
-          },
-            h('option', { value: '' }, T('langFollow')),
-            h('option', { value: 'zh' }, T('langZh')),
-            h('option', { value: 'en' }, T('langEn'))),
+      useEffect(() => { refresh(); }, []);
+      const toggle = async () => {
+        if (!st || st.busy || st.oldHost) return;
+        setSt({ ...st, busy: true });
+        try {
+          const r = await hostRpc('autoModeSet', { enabled: !st.enabled });
+          setSt({ ...st, enabled: !!r.enabled, busy: false });
+        } catch {
+          setSt({ ...st, busy: false });
+        }
+      };
+      const lines = [];
+      if (!st) lines.push(T('storageLoading'));
+      else if (st.oldHost) lines.push(T('autoOldHost'));
+      else {
+        lines.push(st.enabled ? T('autoOn') : T('autoOff'));
+        lines.push(st.caps && st.caps.multiAgent ? T('autoCapsOk') : T('autoCapsNo'));
+      }
+      return h('div', { className: 'dshic-card' },
+        h('div', { className: 'dshic-row' },
+          Ic('spark', 12),
+          h('strong', { style: { fontSize: 12, flex: 1, minWidth: 0 } }, T('autoTitle')),
+          st && !st.oldHost
+            ? h('button', {
+                type: 'button', className: cls('dshic-mini', st.enabled && 'is-on'),
+                disabled: st.busy, onPointerDown: (e) => e.stopPropagation(), onClick: toggle,
+              }, st.enabled ? T('autoOn') : T('autoEnable'))
+            : null,
         ),
-        h(DataRootCard, { key: 'dataroot' }),
-        h(CraftCard, { key: 'craft' }),
-        // 「技能增强」已升级为右侧独立「技能」页（SkillsTab）：四层图标瓦片 + 预览/写设定集
-        // 文本模型卡：只选模型，参数全用 Harness 默认；紧挨图片/视频/TTS 模型卡片
-        h('div', { key: 'llm', className: 'dshic-card' },
-          h('div', { className: 'dshic-row' },
-            Ic('spark', 12),
-            h('strong', { style: { fontSize: 12, flex: 1, minWidth: 0 } }, T('llmLabel')),
-            InfoTip(T('llmHint')),
-          ),
-          h(LlmModelSelect),
-        ),
-        h(ModelProviderEditor, { key: 'imglist', kind: 'image' }),
-        h(ModelProviderEditor, { key: 'vidlist', kind: 'video' }),
-        h(ModelProviderEditor, { key: 'audiolist', kind: 'audio' }),
-        h(ApiListEditor, { key: 'ttslist', kind: 'tts' }),
-        // 帮助与反馈：一行入口（点开弹窗看二维码与提 Issue）
-        h('div', {
-          key: 'support', className: 'dshic-card', style: { cursor: 'pointer' },
-          onClick: () => update((s) => { s.supportOpen = true; }),
-        },
-          h('div', { className: 'dshic-row' },
-            Ic('help', 12),
-            h('strong', { style: { fontSize: 12, flex: 1, minWidth: 0 } }, T('supportBtn')),
-            h('span', { className: 'dshic-hint', style: { flex: 'none' } }, T('supportIssues') + ' / ' + T('supportWechat') + ' ›'),
-          ),
-        ),
-        h('div', { key: 'note', className: 'dshic-hint' }, 'DeepSeek Harness · dsh-infinite-canvas' + ((S.updateInfo && S.updateInfo.runningVersion) ? ' v' + S.updateInfo.runningVersion : '')),
-      ];
+        h('div', { className: 'dshic-hint', style: { marginTop: 4 }, 'data-role': 'auto-mode-status' }, lines.join(' · ')),
+      );
     }
 
     /** 从项目现有创作意图/剧本一键起草设定集（世界观/风格/角色/场景/道具）。 */
@@ -22026,6 +22118,143 @@ const DIRECTOR_KEY_HELP = [
 
     /** 设定条目 ↔ 资产绑定对话框：从当前项目的资产库里多选图片/音频/视频。 */
     /** 绑定对话框的资产行：组件化以便用 useAssetUrl 显示缩略图。 */
+    /** 桥接卡（0.20.0）：开关 + 配置状态；开启时把 dsh-image-gen 的模型同步进图片模型下拉（节点直接可选）。
+     *  状态行只反映 image-gen 侧配置状态（与开关解耦）；开关只管模型同步。同步无变化不写盘。 */
+    function ImageGenBridgeCard() {
+      const [st, setSt] = useState({ missing: false, configured: false });
+      const [enabled, setEnabled] = useState(!!(loadSettings().imageGen || {}).enabled);
+      /** 把 studio describe 的已配置服务商/模型写进 settings.imageProviders 的桥接条目；关闭/未配置时移除。
+       *  返回 { models, changed }：changed=false 时不写盘（设置页每次挂载都探测，写盘会触发 notify 重渲染）。 */
+      const syncBridgeModels = (desc, on) => {
+        const s0 = loadSettings();
+        const list = (s0.imageProviders || []).filter((p) => p.id !== 'image-gen-bridge');
+        const conf = desc ? (desc.providers || []).filter((p) => p && p.configured) : [];
+        const models = [];
+        if (on) for (const p of conf) {
+          const opts = (p.modelOptions || []).map((o) => o.value).filter(Boolean);
+          for (const m of (opts.length ? opts : [p.model].filter(Boolean))) {
+            models.push({ id: p.provider + '|' + m, model: m, viaImageGen: p.provider });
+          }
+        }
+        if (models.length) {
+          list.unshift({ id: 'image-gen-bridge', name: '桥接dsh-image-gen', baseUrl: '', apiKey: '', viaImageGen: true, models });
+        }
+        const noChange = JSON.stringify(s0.imageProviders || []) === JSON.stringify(list);
+        if (!noChange) { s0.imageProviders = list; saveSettings(s0); }
+        return { models: models.length, changed: !noChange };
+      };
+      useEffect(() => {
+        let alive = true;
+        (async () => {
+          try {
+            const r = await fetch('/plugins/dsh-image-gen/studio', { headers: { accept: 'application/json' } });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const j = await r.json();
+            const conf = (j.providers || []).filter((p) => p && p.configured);
+            const on = !!(loadSettings().imageGen || {}).enabled;
+            syncBridgeModels(j, on);
+            if (alive) setSt({ missing: false, configured: conf.length > 0 });
+          } catch {
+            const on = !!(loadSettings().imageGen || {}).enabled;
+            syncBridgeModels(null, on);
+            if (alive) setSt({ missing: true, configured: false });
+          }
+        })();
+        return () => { alive = false; };
+      }, []);
+      const toggle = () => {
+        const v = !enabled;
+        setEnabled(v);
+        const s0 = loadSettings();
+        s0.imageGen = { ...(s0.imageGen || {}), enabled: v };
+        saveSettings(s0);
+        // 开/关即时生效：重跑一次探测同步（加回或移除桥接模型条目）
+        (async () => {
+          try {
+            const r = await fetch('/plugins/dsh-image-gen/studio', { headers: { accept: 'application/json' } });
+            const j = r.ok ? await r.json() : null;
+            const conf = j ? (j.providers || []).filter((p) => p && p.configured) : [];
+            syncBridgeModels(j, v && conf.length > 0);
+            setSt({ missing: !r.ok, configured: conf.length > 0 });
+          } catch { syncBridgeModels(null, false); setSt({ missing: true, configured: false }); }
+        })();
+      };
+      const statusText = st.missing ? T('imageGenMissing') : (st.configured ? T('imageGenStatusYes') : T('imageGenStatusNo'));
+      return h('div', { className: 'dshic-card', 'data-role': 'image-gen-bridge' },
+        h('div', { className: 'dshic-row' },
+          Ic('image', 12),
+          h('strong', { style: { fontSize: 12, flex: 1, minWidth: 0 } }, T('imageGenTitle')),
+          st.missing
+            ? null
+            : h('button', {
+                type: 'button', className: cls('dshic-mini', enabled && 'is-on'),
+                onPointerDown: (e) => e.stopPropagation(),
+                onClick: toggle,
+              }, enabled ? T('autoOn') : T('autoEnable')),
+        ),
+        h('div', { className: 'dshic-hint', style: { marginTop: 4 }, 'data-role': 'image-gen-status' }, statusText),
+      );
+    }
+    function SettingsTab() {
+      const [s, setS] = useState(loadSettings);
+      const apply = (fn) => {
+        setS((prev) => {
+          const next = JSON.parse(JSON.stringify(prev));
+          fn(next);
+          saveSettings(next);
+          return next;
+        });
+      };
+      const field = (label, value, onChange, placeholder, password) => h(Field, { label, value, onChange, placeholder, password });
+      return [
+        h('div', { key: 'lang', className: 'dshic-card' },
+          h('div', { className: 'dshic-row' }, Ic('text', 12), h('strong', { style: { fontSize: 12 } }, T('langLabel'))),
+          h('select', {
+            className: 'dshic-select', value: s.lang || '',
+            onChange: (e) => {
+              apply((d) => { d.lang = e.target.value; });
+              LANG_OVERRIDE = e.target.value;
+              notify();
+            },
+            onPointerDown: (e) => e.stopPropagation(),
+          },
+            h('option', { value: '' }, T('langFollow')),
+            h('option', { value: 'zh' }, T('langZh')),
+            h('option', { value: 'en' }, T('langEn'))),
+        ),
+        h(DataRootCard, { key: 'dataroot' }),
+        h(CraftCard, { key: 'craft' }),
+        h(AutoModeCard, { key: 'automode' }),
+        h(ImageGenBridgeCard, { key: 'imagegenbridge' }),
+        // 「技能增强」已升级为右侧独立「技能」页（SkillsTab）：四层图标瓦片 + 预览/写设定集
+        // 文本模型卡：只选模型，参数全用 Harness 默认；紧挨图片/视频/TTS 模型卡片
+        h('div', { key: 'llm', className: 'dshic-card' },
+          h('div', { className: 'dshic-row' },
+            Ic('spark', 12),
+            h('strong', { style: { fontSize: 12, flex: 1, minWidth: 0 } }, T('llmLabel')),
+            InfoTip(T('llmHint')),
+          ),
+          h(LlmModelSelect),
+        ),
+        h(ModelProviderEditor, { key: 'imglist', kind: 'image' }),
+        h(ModelProviderEditor, { key: 'vidlist', kind: 'video' }),
+        h(ModelProviderEditor, { key: 'audiolist', kind: 'audio' }),
+        h(ApiListEditor, { key: 'ttslist', kind: 'tts' }),
+        // 帮助与反馈：一行入口（点开弹窗看二维码与提 Issue）
+        h('div', {
+          key: 'support', className: 'dshic-card', style: { cursor: 'pointer' },
+          onClick: () => update((s) => { s.supportOpen = true; }),
+        },
+          h('div', { className: 'dshic-row' },
+            Ic('help', 12),
+            h('strong', { style: { fontSize: 12, flex: 1, minWidth: 0 } }, T('supportBtn')),
+            h('span', { className: 'dshic-hint', style: { flex: 'none' } }, T('supportIssues') + ' / ' + T('supportWechat') + ' ›'),
+          ),
+        ),
+        h('div', { key: 'note', className: 'dshic-hint' }, 'DeepSeek Harness · dsh-infinite-canvas' + ((S.updateInfo && S.updateInfo.runningVersion) ? ' v' + S.updateInfo.runningVersion : '')),
+      ];
+    }
+
     function AssetPickRow({ a, checked, onToggle }) {
       const url = useAssetUrl(a.kind === 'image' ? a.id : null);
       return h('label', { className: 'dshic-row', style: { gap: 6, fontSize: 11, cursor: 'pointer', alignItems: 'center' }, onPointerDown: (e) => e.stopPropagation(), onClick: () => onToggle() },
@@ -23536,9 +23765,11 @@ const DIRECTOR_KEY_HELP = [
       const pid = String(id || '');
       if (!pid) return;
       if ((S.projects || []).some((p) => p.id === pid)) return;
+      // 名字未知（旧宿主 / 竞态）→ 交给宿主下一次同步补登记；绝不把项目 id 当名字写进本地表
+      if (!String(name || '').trim()) return;
       update((s) => {
         s.projects = [{
-          id: pid, name: name || pid, canvases: [], defaultCanvasName: '默认画布',
+          id: pid, name: String(name).trim(), canvases: [], defaultCanvasName: '默认画布',
           createdAt: Date.now(), updatedAt: Date.now(),
         }].concat(s.projects || []);
       });
@@ -23637,7 +23868,7 @@ const DIRECTOR_KEY_HELP = [
         const r = await hostRpc('workspaceProjectCreate', { sessionId });
         if (r && r.ok) {
           update((s) => { s.bindingCreating = false; s.bindingMenuOpen = false; });
-          ensureLocalProject(r.projectId, (S.sessionBinding && S.sessionBinding.project && S.sessionBinding.project.name) || '');
+          ensureLocalProject(r.projectId, r.name || '');
           refreshDataRoot().catch(() => { /* 项目清单下一轮 3s 同步也会带 */ });
           await refreshSessionBinding(sessionId);
           const sb = S.sessionBinding;
@@ -24203,6 +24434,7 @@ const DIRECTOR_KEY_HELP = [
           // 设置迁移的测试缝隙
           window.__DSH_IC_SETTINGS__ = {
             DEFAULT_SETTINGS, loadSettings, saveSettings,
+            flattenImageModels, resolveImageModelCfg,
             buildExpertContext,
           };
           // 创作上下文注入的测试缝隙（供 scripts/test-skill-inject.mjs 断言）

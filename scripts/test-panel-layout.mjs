@@ -1227,10 +1227,70 @@ function cssRulesMatchingClass(name) {
   ok(/white-space:nowrap/.test(cssRule('.dshic-storage-summary')), '精简状态不是单行（缺少 nowrap）');
 }
 
+// ---------------- 自动创作卡片（0.20.0 实验开关） ----------------
+{
+  ok(/function AutoModeCard\(/.test(src), '缺 AutoModeCard（设置页自动创作开关卡片）');
+  ok(/SettingsTab[\s\S]{0,2400}?h\(AutoModeCard, \{ key: 'automode' \}\)/.test(src), 'AutoModeCard 未挂进设置页（应在 CraftCard 之后）');
+  ok(/hostRpc\('autoModeGet'\)/.test(src) && /hostRpc\('autoModeSet'/.test(src), '自动创作卡片未接 autoModeGet/autoModeSet RPC');
+  ok(/data-role': 'auto-mode-status'/.test(src), '自动创作状态行缺 data-role（回归定位锚点）');
+  ok(src.includes("'autoOldHost'"), '缺旧宿主提示文案（autoModeGet 失败时必须提示重启，不得静默）');
+  ok(/function ProductionStageRow\(/.test(src) && /data-role': 'production-stage'/.test(src), '缺制作阶段行（ProjectsTab 阶段显示）');
+  ok(/hostRpc\('productionStatus'/.test(src), '阶段行未接 productionStatus RPC');
+  ok(src.includes("'stageCurrent'") && src.includes("'stageBlockers'"), '缺阶段行 i18n 键');
+  // 绑定 chip 必须是可收缩的（否则长项目名把 composer 右侧按钮挤出边框）
+  ok(/\.dshic-bind\{[^}]*min-width:0[^}]*\}/.test(src) && /\.dshic-bind\{[^}]*flex:0 1 auto[^}]*\}/.test(src), '.dshic-bind 缺 flex:0 1 auto / min-width:0（绑定态会挤爆 composer）');
+  ok(/\.dshic-bind-chip\{[^}]*max-width:100%[^}]*\}/.test(src), '.dshic-bind-chip 缺 max-width:100%');
+  // dsh-image-gen 桥接
+  ok(/function ImageGenBridgeCard\(/.test(src) && /data-role': 'image-gen-bridge'/.test(src), '缺 ImageGenBridgeCard（dsh-image-gen 图片模型卡）');
+  ok(/h\(ImageGenBridgeCard, \{ key: 'imagegenbridge' \}\)/.test(src), 'ImageGenBridgeCard 未挂进设置页');
+  ok(/\/plugins\/dsh-image-gen\/studio/.test(src) && /function apiGenBridge\(/.test(src), '缺 dsh-image-gen /studio 桥接（模型探测或生图）');
+  ok(/useBridge\s*\?\s*await apiGenBridge/.test(src), '图片生成未接入 dsh-image-gen 桥接分支');
+  ok(/id: 'image-gen-bridge'/.test(src) && /viaImageGen/.test(src), '桥接模型未同步进 imageProviders（节点下拉应直选）');
+  ok(src.includes("imageGenStatusYes") && src.includes("imageGenStatusNo"), '缺「未配置/已配置」状态行');
+}
+
+// 行为回归（P0）：桥接模型的 viaImageGen/imageGenProvider 必须在扁平视图里透传——
+// 否则节点下拉能看到桥接模型，选中生成时 useBridge 判 false → 走 apiImage → baseUrl 空 → 「未配置图片 API」。
+// 曾因 flattenImageModels 丢字段导致整条桥接链路必炸，源码正则门禁抓不住，必须走行为断言。
+{
+  const SET = sandbox.window.__DSH_IC_SETTINGS__;
+  ok(SET && typeof SET.flattenImageModels === 'function', '__DSH_IC_SETTINGS__ 缺 flattenImageModels（桥接行为回归需要）');
+  if (SET && typeof SET.flattenImageModels === 'function') {
+    const fake = {
+      imageProviders: [
+        { id: 'image-gen-bridge', name: '桥接dsh-image-gen', baseUrl: '', apiKey: '', viaImageGen: true,
+          models: [{ id: 'google|gemini-img', model: 'gemini-img', viaImageGen: 'google' }] },
+        { id: 'plain', name: '普通供应商', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-x',
+          models: [{ id: 'm1', model: 'plain-model' }] },
+      ],
+    };
+    const flat = SET.flattenImageModels(fake);
+    const bridge = flat.find((x) => x.providerId === 'image-gen-bridge');
+    const plain = flat.find((x) => x.providerId === 'plain');
+    ok(!!bridge, 'flattenImageModels 丢掉了桥接条目');
+    ok(bridge && bridge.viaImageGen === true, '桥接供应商级 viaImageGen 未透传（useBridge 判 false → 生成必炸）');
+    ok(bridge && bridge.imageGenProvider === 'google', '桥接模型级 imageGenProvider 未透传（/studio 请求缺 provider）');
+    ok(plain && !plain.viaImageGen && !plain.imageGenProvider, '普通供应商被误标为桥接（会错误路由到 /studio）');
+  }
+}
+
+// 行为回归（状态行语义）：configured 只反映 image-gen 侧的配置状态，与卡片开关解耦——
+// 「未配置/已配置」描述的是插件是否配好；开关只管模型是否同步进下拉。曾耦合导致关着开关时显示「未配置」。
+// 写盘去抖：探测同步在设置无变化时不得 saveSettings（设置页每次挂载都会探测，写盘会触发 notify 重渲染循环）。
+{
+  const TABS2 = sandbox.window.__DSH_IC_TABS__;
+  const SET = sandbox.window.__DSH_IC_SETTINGS__;
+  // 源码级契约：configured 判定不得再乘上 on/enabled（解耦）；syncBridgeModels 写盘前必须比对现状
+  ok(!/configured: on && conf\.length/.test(src), '桥接状态行仍与开关耦合（关闭时已配置的插件显示「未配置」）');
+  ok(/JSON\.stringify\((?:s0|prev)\.imageProviders(?: \|\| \[\])?\) === JSON\.stringify\(list\)|function syncBridgeModels[\s\S]{0,900}不变/.test(src) || /syncBridgeModels[\s\S]{0,900}noChange/.test(src),
+    'syncBridgeModels 每次探测都写盘（设置页挂载→saveSettings→notify 重渲染循环）');
+  ok(!!TABS2 && !!SET, '沙箱缝隙缺失（TABS/SETTINGS）');
+}
+
 if (errs.length) {
   console.error('✗ 面板结构测试未通过（' + errs.length + ' 项）：');
   for (const e of errs) console.error('  - ' + e);
   process.exit(1);
 }
-console.log('✓ 面板结构测试通过（返回图标 / 图标列无框悬浮 / 统一弹窗 / 项目名与画布名就地编辑 / 下拉单行+顶部+/底部页码分页 / 右栏仅当前项目+折叠+搜索+比例 / 全局实底无灰蓝/无模糊 / 多画布目录树 / 存储实况折叠）');
+console.log('✓ 面板结构测试通过（返回图标 / 图标列无框悬浮 / 统一弹窗 / 项目名与画布名就地编辑 / 下拉单行+顶部+/底部页码分页 / 右栏仅当前项目+折叠+搜索+比例 / 全局实底无灰蓝/无模糊 / 多画布目录树 / 存储实况折叠 / 自动创作开关卡片）');
 process.exit(0);
