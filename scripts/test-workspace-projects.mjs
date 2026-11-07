@@ -272,6 +272,50 @@ fs.mkdirSync(REGISTRY0[1].path, { recursive: true }); // 无标记的工作区�
   ok(!(dpGet2 && dpGet2.binding), '解绑后仍回读为已绑定');
 }
 
+// ---------------- 绑定会话的读取隔离（0.20.0） ----------------
+{
+  I.wsWatchTick(REGISTRY); // 填充 wsProjects 缓存（锁依赖它解析工作区内嵌项目）
+  await I.rpcMethods().sessionBindingSet({ sessionId: 'ses_new01', projectId: 'plain1', canvasId: null });
+  const execBound = { agent: { sessionId: 'ses_new01' } };
+  const lr = await tool('canvas_list_projects').execute({}, execBound);
+  ok(String(lr.text).includes('只显示绑定项目'), '绑定会话 list 未提示只显示绑定项目');
+  ok(!String(lr.text).includes(WS_PID), '绑定会话 list 泄漏了其他项目');
+  ok(String(lr.text).includes('plain1'), '绑定会话 list 缺少绑定项目本身');
+  const cr = await tool('canvas_create_project').execute({ name: '越权新项目' }, execBound);
+  ok(cr && cr.ok === false && cr.locked === true, '绑定会话 canvas_create_project 未被拒绝');
+  // 未绑定会话不受限（不能过度收紧）
+  const lr2 = await tool('canvas_list_projects').execute({}, { agent: { sessionId: 'ses_free_xyz' } });
+  ok(!String(lr2.text).includes('只显示绑定项目'), '未绑定会话不应出现绑定过滤提示');
+}
+
+// ---------------- 工作区项目命名（0.20.0）：title 优先，存量机器名自动修正 ----------------
+{
+  const TITLE_DIR = path.join(SANDBOX, 'wsmw3hao7et2ll');
+  fs.mkdirSync(TITLE_DIR, { recursive: true });
+  const WS_TITLE = { id: 'ws-title-0001', path: TITLE_DIR, title: '百炼短剧', sessionIds: ['ses_title'] };
+  REGISTRY.push(WS_TITLE);
+  I.wsWatchTick(REGISTRY);
+  const M2 = I.rpcMethods();
+  const made = await M2.workspaceProjectCreate({ sessionId: 'ses_title' });
+  ok(made && made.ok, 'workspaceProjectCreate 失败');
+  eq(made && made.name, '百炼短剧', '新建项目名未取工作区显示名（实际：' + (made && made.name) + '）');
+  const doc = await I.projectsGet({ id: made.projectId });
+  eq(doc && doc.name, '百炼短剧', '项目文档名未取工作区显示名');
+  // 存量修正：把名字改回"目录名"（模拟旧版本建出来的项目），再次 adopt 应自动改回显示名
+  const f = path.join(TITLE_DIR, '.infinite-canvas', 'project.json');
+  const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+  raw.name = 'wsmw3hao7et2ll';
+  fs.writeFileSync(f, JSON.stringify(raw));
+  const again = await M2.workspaceProjectCreate({ sessionId: 'ses_title' });
+  eq(again && again.name, '百炼短剧', '存量机器名未被自动修正');
+  // 用户手动改过的名字不得覆盖
+  const raw2 = JSON.parse(fs.readFileSync(f, 'utf8'));
+  raw2.name = '我的手改项目';
+  fs.writeFileSync(f, JSON.stringify(raw2));
+  const third = await M2.workspaceProjectCreate({ sessionId: 'ses_title' });
+  eq(third && third.name, '我的手改项目', '用户手动改过的项目名被覆盖');
+}
+
 // ---------------- 结果 ----------------
 if (errs.length) {
   console.error('✗ test-workspace-projects FAIL（' + errs.length + '）:');
