@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizeSkillProfile, DEFAULT_SKILL_PROFILE } from './index-core-skill-profile.js';
-import { mergeDocWrite } from './gen-pool.js';
+import { mergeDocWrite, createJobBook, decideAnalyze, decideTimeline, edgeBlock, edgeBlockSay, honestSay, mediaKind } from './gen-pool.js';
 import {
   SUGGESTED_MODEL_ID,
   USER_MODEL_NAME,
@@ -66,9 +66,17 @@ import {
   analysisDigest,
   AUDIO_ANALYSIS_SCHEMA,
   AUDIO_ENDPOINT_PRESETS,
+  imageRefPayload,
+  videoConditionPlan,
 } from './audio-drive.js';
 import { initPackBase, packInventory, allowedIds } from './skill-pack-loader.js';
 import { buildSkillPack, SKILL_CATALOG, renderInventory, renderProfile } from './skill-pack.js';
+
+const jobBook = createJobBook();
+function rememberJob(node, job) {
+  if (!node || !job) return;
+  node.data = { ...(node.data || {}), job };
+}
 
 const NAME = 'infinite-canvas';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -2706,6 +2714,16 @@ async function canvasRunNode(args) {
   const doc = readToolDoc(args);
   const node = doc.nodes[nodeId];
   if (!node) throw new Error('节点不存在: ' + nodeId);
+  const live = jobBook.get(nodeId, mediaKind(node.type));
+  if (live && live.status === 'running' && live.owner) {
+    return {
+      ok: true, inProgress: true, joined: true, projectId: pid, ...(canvasId ? { canvasId } : {}),
+      nodeId, type: node.type, label: (node.data && node.data.label) || '', job: live,
+      text: live.line || '这个节点已经在跑，没有再开一次。',
+    };
+  }
+  const blocked = edgeBlock(node, doc.edges, doc.nodes);
+  if (blocked.length && node.type !== 'audio') throw new Error(edgeBlockSay(blocked));
   const cfg = readIcConfig();
   cfg.ui = { ...(cfg.ui || {}), runRequest: { projectId: pid, canvasId, nodeId, at: Date.now() } };
   writeIcConfig(cfg);
@@ -3493,6 +3511,37 @@ async function canvasAnalyzeAudio(args) {
   } else if (args && args.assetId) {
     node.data.assetId = String(args.assetId);
   }
+  const analyzeDecision = decideAnalyze({
+    job: jobBook.get(node.id, 'analyze'),
+    hasAnalysis: !!(node.data && node.data.analysis),
+    hasEnergy: Array.isArray(args && args.energy) && args.energy.length > 0,
+    hasAudioBase64: !!(args && args.audioBase64),
+    hasAsset: !!(node.data && node.data.assetId),
+    hasDuration: Number(args && args.durationSec) > 0,
+    force: !!(args && (args.force === true || args.force === 'true')),
+  });
+  if (analyzeDecision.action === 'join') {
+    return {
+      ok: true, inProgress: true, joined: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
+      job: analyzeDecision.job,
+      text: (analyzeDecision.job && analyzeDecision.job.line) || '正在听这首歌，还没有分析完。不要说已经分析完。',
+    };
+  }
+  if (analyzeDecision.action === 'queue-client') {
+    const opened = jobBook.open({
+      nodeId: node.id, kind: 'analyze', status: 'queued', owner: '',
+      line: '歌已经在节点里。已交给画布上的同一次听歌，还没有结果。',
+    });
+    rememberJob(node, opened.job);
+    doc.updatedAt = Date.now();
+    writeToolDoc(args, doc);
+    await canvasRunNode({ projectId: id, canvasId, nodeId: node.id });
+    return {
+      ok: true, inProgress: true, queued: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
+      job: opened.job, text: opened.job.line,
+    };
+  }
+  if (analyzeDecision.action === 'missing-file') throw new Error('音频节点还没有歌曲：上传、从资产库放入，或传入 assetId / energy');
   if (node.data.analysis && !(args && (args.force === true || args.force === 'true'))) {
     const digest = analysisDigest(node.data.analysis);
     return {
@@ -3507,16 +3556,29 @@ async function canvasAnalyzeAudio(args) {
     throw new Error('音频节点还没有歌曲：上传、从资产库放入，或传入 assetId / energy');
   }
   if (file && file.tooBig) {
+    const opened = jobBook.open({
+      nodeId: node.id, kind: 'analyze', status: 'queued', owner: '',
+      line: '歌已经在节点里。文件太大，已交给画布压成 WAV 再听，还没有结果。',
+    });
+    rememberJob(node, opened.job);
+    doc.updatedAt = Date.now();
+    writeToolDoc(args, doc);
     await canvasRunNode({ projectId: id, canvasId, nodeId: node.id });
     return {
-      ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
-      deferred: true, cached: false,
-      text: '歌曲文件超过单次 Base64 上限。已请画布把音频压成单声道 WAV 后再分析（画布页面需要开着）。完成后用 canvas_node_status 读取。',
+      ok: true, inProgress: true, queued: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
+      job: opened.job, deferred: true, cached: false, text: opened.job.line,
     };
   }
   const provider = audioProviderFromConfig(node.data.audioModel || node.data.model || '');
   const localOnly = !provider;
-  const analysis = await understandFromRequest({
+  const hostJob = jobBook.open({
+    nodeId: node.id, kind: 'analyze', owner: 'host', status: 'running', phase: 'connecting',
+    line: '正在听，还没有分析完。', force: !!(args && (args.force === true || args.force === 'true')),
+  });
+  rememberJob(node, hostJob.job);
+  let analysis;
+  try {
+    analysis = await understandFromRequest({
     provider: provider || null,
     audioBase64: file && file.buf ? file.buf.toString('base64') : '',
     format: file && file.format,
@@ -3528,11 +3590,17 @@ async function canvasAnalyzeAudio(args) {
     windowIndex: args && args.windowIndex,
     windowCount: args && args.windowCount,
     phase: 'analysis',
-  });
+    });
+  } catch (e) {
+    jobBook.fail(node.id, 'analyze', (e && e.message) || e);
+    throw e;
+  }
   node.data.analysis = analysis;
   node.data.status = 'done';
   node.data.error = null;
   node.data.aiStatus = 'idle';
+  const doneJob = jobBook.finish(node.id, 'analyze', { source: analysis && analysis.source, method: analysis && analysis.method });
+  if (doneJob) { doneJob.line = '分析已写入这个节点。'; rememberJob(node, doneJob); }
   doc.updatedAt = Date.now();
   writeToolDoc(args, doc);
   markDocChanged(id, canvasId);
@@ -3883,8 +3951,28 @@ async function canvasMusicTimeline(args, completeFn) {
     audio = doc.nodes[created.nodeId];
   }
   if (!analysis || typeof analysis !== 'object') analysis = audio.data && audio.data.analysis;
-  if (!analysis || typeof analysis !== 'object') throw new Error('还没有音频分析：先上传歌曲并分析，或传入 analysis');
+  const timelineDecision = decideTimeline({
+    job: jobBook.get(audio.id, 'analyze'),
+    hasAnalysis: !!(analysis && typeof analysis === 'object'),
+    hasAsset: !!(audio.data && audio.data.assetId),
+  });
   const style = String((args && (args.style || args.brief)) || (audio.data && audio.data.styleText) || '');
+  if (timelineDecision.action === 'wait') {
+    const job = jobBook.patch(audio.id, 'analyze', { followUp: { kind: 'timeline', style } }) || timelineDecision.job;
+    if (style) audio.data.styleText = style;
+    rememberJob(audio, job);
+    doc.updatedAt = Date.now();
+    writeToolDoc(args, doc);
+    return {
+      ok: true, inProgress: true, waiting: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: audio.id,
+      job, text: ((job && job.line) || '正在听') + '。风格已记下，听完再铺时间轴。现在还没有时间轴。',
+    };
+  }
+  if (timelineDecision.action === 'need-analysis') {
+    throw new Error(timelineDecision.hasAsset
+      ? '歌已经在这个节点里，但还没有听完。先等分析结束，不要当成已经分析完。'
+      : '还没有音频分析：先上传歌曲并分析，或传入 analysis');
+  }
   audio.data.analysis = analysis;
   audio.data.styleText = style;
   audio.data.status = 'done';
@@ -4660,6 +4748,63 @@ export function apply(ctx) {
         const analysis = await understandFromRequest(args || {});
         return { ok: true, analysis };
       },
+      async jobOpen(args) {
+        const a = args || {};
+        const opened = jobBook.open({
+          nodeId: a.nodeId, kind: a.kind, owner: a.owner || '', status: a.status, phase: a.phase,
+          line: a.line, windowCount: a.windowCount, force: a.force === true,
+        });
+        const doc = readToolDoc(a);
+        const node = doc.nodes && doc.nodes[a.nodeId];
+        if (node) { rememberJob(node, opened.job); doc.updatedAt = Date.now(); writeToolDoc(a, doc); }
+        return { ok: true, ...opened };
+      },
+      async jobPatch(args) {
+        const a = args || {};
+        const job = jobBook.patch(a.nodeId, a.kind, a);
+        const doc = readToolDoc(a);
+        const node = doc.nodes && doc.nodes[a.nodeId];
+        if (node && job) { rememberJob(node, job); doc.updatedAt = Date.now(); writeToolDoc(a, doc); }
+        return { ok: true, job };
+      },
+      async jobFinish(args) {
+        const a = args || {};
+        const job = jobBook.finish(a.nodeId, a.kind, a.result || null);
+        if (job) job.line = a.line || job.line || '完成';
+        const doc = readToolDoc(a);
+        const node = doc.nodes && doc.nodes[a.nodeId];
+        if (node && job) { rememberJob(node, job); doc.updatedAt = Date.now(); writeToolDoc(a, doc); }
+        return { ok: true, job };
+      },
+      async jobFail(args) {
+        const a = args || {};
+        const job = jobBook.fail(a.nodeId, a.kind, a.error);
+        return { ok: true, job };
+      },
+      async jobGet(args) {
+        const a = args || {};
+        return { ok: true, job: jobBook.get(a.nodeId, a.kind) };
+      },
+      async edgeBlock(args) {
+        const doc = readToolDoc(args || {});
+        const node = doc.nodes && doc.nodes[args && args.nodeId];
+        if (!node) return { ok: true, missing: [], say: '' };
+        const missing = edgeBlock(node, doc.edges, doc.nodes);
+        return { ok: true, missing, say: edgeBlockSay(missing) };
+      },
+      async mediaFit(args) {
+        const a = args || {};
+        if (a.kind === 'image') {
+          const payload = imageRefPayload(Array(Math.max(0, Number(a.count) || 0)).fill('x'), a.mode || 'generations');
+          return { field: payload.field, state: payload.state, count: payload.count };
+        }
+        if (a.hard) {
+          return { state: a.hasFrame ? 'sent' : 'missing', field: 'first_frame', sendFrame: !!a.hasFrame, sendRefs: 0, dropped: Number(a.refCount) || 0, say: a.hasFrame ? '将送出分镜首帧。' : '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
+        }
+        return videoConditionPlan({
+          hasFrameBlob: !!a.hasFrame, refCount: a.refCount, frameMode: a.frameMode || 'auto', refCap: a.refCap,
+        });
+      },
       async audioEndpointPresets() {
         return { ok: true, presets: AUDIO_ENDPOINT_PRESETS };
       },
@@ -4891,8 +5036,9 @@ export function apply(ctx) {
           steps.push({
             tool: action.tool,
             nodeId,
-            label: (result && (result.label || result.text)) || '',
-            ok: true,
+            label: (result && (result.text || result.label)) || '',
+            ok: !(result && (result.inProgress || result.ok === false)),
+            inProgress: !!(result && result.inProgress),
           });
           return result;
         };
@@ -5016,9 +5162,9 @@ export function apply(ctx) {
               break;
             }
             try {
-              await runOne(action);
-              done.push({ tool: action.tool, ok: true });
-              say = action.say || ('已执行 ' + action.tool);
+              const result = await runOne(action);
+              done.push({ tool: action.tool, ok: !(result && result.inProgress), inProgress: !!(result && result.inProgress), text: result && result.text });
+              say = (result && result.text) || action.say || ('已执行 ' + action.tool);
               if (!native || !action.native) break;
             } catch (e) {
               say = '执行失败：' + String((e && e.message) || e);
@@ -5032,6 +5178,15 @@ export function apply(ctx) {
           if (!say && modelError) say = modelError;
         }
         const fresh = readToolDoc(args);
+        const scopeNode = fresh.nodes && (fresh.nodes[scopeId] || Object.values(fresh.nodes).find((n) => n && n.type === 'audio' && n.data && n.data.job));
+        const job = (scopeNode && scopeNode.data && scopeNode.data.job) || jobBook.list().find((j) => !scopeId || j.nodeId === scopeId) || null;
+        say = honestSay(say, {
+          hasAnalysis: !!(scopeNode && scopeNode.data && scopeNode.data.analysis && scopeNode.data.analysis.sections),
+          hasPackage: !!(scopeNode && scopeNode.data && scopeNode.data.mvPackage && scopeNode.data.mvPackage.scenes && scopeNode.data.mvPackage.scenes.length),
+          hasAsset: !!(scopeNode && scopeNode.data && scopeNode.data.assetId && scopeNode.data.status === 'done'),
+          job,
+          steps,
+        });
         const chat = history.concat([
           { role: 'user', text: userMsg, at: Date.now() },
           {

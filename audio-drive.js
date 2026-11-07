@@ -686,6 +686,7 @@ export function canvasDigest(graph, selection) {
       model: d.imageModel || d.videoModel || d.model || '',
       prompt: String(d.prompt || d.idea || d.text || d.script || '').slice(0, 100),
       failure: d.adapt && d.adapt.kind ? { kind: d.adapt.kind, say: String(d.adapt.say || '').slice(0, 160), change: String(d.adapt.change || '').slice(0, 80) } : null,
+      job: d.job && d.job.status ? { kind: d.job.kind || '', status: d.job.status, line: String(d.job.line || '').slice(0, 160) } : null,
       selected: sel.has(n.id),
     };
   });
@@ -741,6 +742,7 @@ export function canvasAssistantSystem() {
     '生成图片、生成视频、成片合成、删除节点必须先停下来等用户确认，不要连续调用。',
     '节点失败时先看 failure：说明原因，并按其中的改动再生成。余额不足或密钥无效不要重试。',
     '一次只调用一个工具。没有工具要调用时，用一句中文回答。',
+    '摘要里的 job 是这个节点正在做的事。status 不是 done 时，不要说分析完、时间轴铺好或已经生成。工具回执写了还在进行，就原样告诉用户。',
   ].join('\n');
 }
 

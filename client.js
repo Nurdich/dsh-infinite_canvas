@@ -6312,11 +6312,9 @@ function queueThumb(assetId) {
       if (refs.length) {
         const imgs = [];
         for (const b of refs) imgs.push(await blobToDataUrlScaled(b.blob || b));
-        const payload = imageRefPayload(imgs, 'generations');
-        if (payload.state !== 'sent' || payload.field !== 'image' || !payload.image || payload.image.length !== imgs.length) {
-          throw new Error('参考图没有放进图片请求');
-        }
-        body.image = payload.image.slice();
+        const spec = await hostRpc('mediaFit', { kind: 'image', mode: 'generations', count: imgs.length });
+        if (!spec || spec.field !== 'image' || spec.state !== 'sent') throw new Error('参考图没有放进图片请求');
+        body.image = imgs.slice();
       }
       // 响应格式：留空 = 用 API 默认（响应解析同时支持 b64_json 与 url）
       if (String(s.responseFormat || '').trim()) body.response_format = String(s.responseFormat).trim();
@@ -7704,7 +7702,11 @@ function queueThumb(assetId) {
       // 参考素材上限检查：超出即告警（截断发生在各 runner 内，这里先把事实说清楚）。
       // 未知厂商兜底 8 = IC-03 降级后的 OpenAI 兼容链实际发送上限。
       const cap = (VIDEO_REF_CAPS[vendor] || { img: 8 }).img;
-      const fit = fitVideoImages(frameBlob, o.refs || [], cap, !!o.hardFrame);
+      const spec = await hostRpc('mediaFit', {
+        kind: 'video', hasFrame: !!frameBlob, refCount: (o.refs || []).length,
+        frameMode: o.frameMode || 'auto', refCap: cap, hard: !!o.hardFrame,
+      });
+      const fit = applyVideoFit(frameBlob, o.refs || [], spec);
       if (o.onDelivery && (fit.plan.state === 'sent' || fit.plan.state === 'downgraded')) {
         try { o.onDelivery(Object.assign({}, fit.plan, { count: fit.blobs.length, cap })); } catch { /* 记录失败不影响发送 */ }
       }
@@ -11169,6 +11171,21 @@ function queueThumb(assetId) {
         getChannelData: (c) => chans[c] || chans[0],
       };
     }
+    async function claimJob(node, kind, line) {
+      const r = await hostRpc('jobOpen', {
+        projectId: S.activeId, canvasId: activeCanvasId(), nodeId: node.id, kind, owner: 'client',
+        phase: 'connecting', line: line || '正在开始',
+      });
+      if (r && r.job) {
+        update((s) => {
+          const nd = s.graph.nodes[node.id];
+          if (!nd) return;
+          nd.data.job = r.job;
+          if (r.job.line) nd.data.analyzeProgress = r.job.line;
+        });
+      }
+      return r;
+    }
     async function postAudioUnderstand(payload) {
       const res = await fetch('/' + NS + '/api/audio-understand', {
         method: 'POST',
@@ -11194,6 +11211,8 @@ function queueThumb(assetId) {
       const settings = loadSettings();
       const cfg = resolveAudioModelCfg(settings, n.data.audioModel || '');
       if (!cfg || !cfg.baseUrl || !cfg.apiKey || !cfg.model) throw new Error(T('tlNeedOmni'));
+      const claimed = await claimJob(n, 'analyze', listenLine(null, 0, 1));
+      if (claimed && claimed.joined) return n.data.analysis || null;
       let durationSec = 0;
       let energy = [];
       let analysis = null;
@@ -11220,6 +11239,8 @@ function queueThumb(assetId) {
                 const nd = s.graph.nodes[n.id];
                 if (!nd) return;
                 nd.data.analyzeProgress = listenLine(p, i, windows.length);
+                nd.data.job = Object.assign({}, nd.data.job || {}, { line: nd.data.analyzeProgress, phase: p && p.receiving ? 'receiving' : (p && p.lastChunkAt ? 'waiting' : 'connecting'), status: 'running' });
+                hostRpc('jobPatch', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'analyze', line: nd.data.analyzeProgress, phase: nd.data.job.phase, windowIndex: i, windowCount: windows.length, text: p && p.text || '' }).catch(() => {});
                 if (p.text) nd.data.analyzePartial = p.text;
                 if (p.reasoning) nd.data.analyzeReasoning = p.reasoning;
                 nd.data.analyzeReceiving = !!p.receiving;
@@ -11268,6 +11289,7 @@ function queueThumb(assetId) {
                 nd.data.error = String((e && e.message) || e);
               });
               await rememberFailure(n.id, e, { prompt: '', duration: view.duration, model: cfg.model, provider: cfg.baseUrl }, 0);
+              hostRpc('jobFail', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'analyze', error: String((e && e.message) || e) }).catch(() => {});
               throw e;
             } finally { stopPoll(); }
           }
@@ -11288,6 +11310,15 @@ function queueThumb(assetId) {
           nd.data.analyzeRetry = false;
           nd.data.analyzeResume = 0;
           nd.data.adapt = null;
+          hostRpc('jobFinish', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'analyze', line: '分析已写入这个节点。' }).then((fin) => {
+            if (!(fin && fin.job && fin.job.followUp && fin.job.followUp.style)) return;
+            update((s) => {
+              const row = s.graph.nodes[n.id];
+              if (!row) return;
+              row.data.styleText = fin.job.followUp.style;
+              row.data.timelineOffer = '分析好了。风格已记下，点「生成时间轴」。';
+            });
+          }).catch(() => {});
           nd.data.analyzeLocal = analysis.method !== 'model';
           nd.data.analyzeModel = cfg.model;
           nd.data.sectionsConfirmed = false;
@@ -11677,64 +11708,17 @@ function queueThumb(assetId) {
       }
       return missing;
     }
-    function videoConditionPlan(input) {
-      const o = input || {};
-      const refCount = Math.max(0, Number(o.refCount) || 0);
-      const hasFrame = !!o.hasFrameBlob;
-      const mode = o.frameMode || 'auto';
-      const cap = o.refCap == null ? 8 : Number(o.refCap);
-      if (!hasFrame && !refCount) {
-        return { state: 'missing', field: '', sendFrame: false, sendRefs: 0, dropped: 0, say: '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' };
-      }
-      if (mode === 'hard' && hasFrame && refCount) {
-        return { state: 'unsupported', field: 'first_frame', sendFrame: true, sendRefs: 0, dropped: refCount, say: '硬首帧会丢掉角色参考图。请改成自动，让首帧和参考图一起送。本次没有生成。' };
-      }
-      if (refCount && cap <= 0) {
-        return { state: 'unsupported', field: hasFrame ? 'first_frame' : '', sendFrame: hasFrame, sendRefs: 0, dropped: refCount, say: hasFrame
-          ? '这个视频模型只能收首帧，角色参考图送不进去。请换支持参考图的模型。本次没有生成。'
-          : '这个视频模型不支持参考图，这一段又没有分镜首帧。请换模型或先生成分镜。' };
-      }
-      if (hasFrame && refCount) {
-        const room = Math.max(0, cap - 1);
-        const n = Math.min(room, refCount);
-        const dropped = refCount - n;
-        let say = '这个模型不能同时用首帧和参考图。分镜首帧会作为第一张参考图送出，另外 ' + n + ' 张角色或场景图一起送。';
-        if (dropped) say += '该模型最多 ' + cap + ' 张，其余 ' + dropped + ' 张这次没有送出。';
-        return { state: 'downgraded', field: 'reference_image', sendFrame: false, sendRefs: n + 1, dropped, say };
-      }
-      if (hasFrame) return { state: 'sent', field: 'first_frame', sendFrame: true, sendRefs: 0, dropped: 0, say: '将送出分镜首帧。' };
-      const n = Math.min(Math.max(0, cap), refCount);
-      const dropped = refCount - n;
-      let say = '将送出 ' + n + ' 张参考图。';
-      if (dropped) say += '该模型最多 ' + cap + ' 张，其余 ' + dropped + ' 张这次没有送出。';
-      return { state: 'sent', field: 'reference_image', sendFrame: false, sendRefs: n, dropped, say };
-    }
-    function fitVideoImages(frameBlob, refs, cap, hardFrame) {
-      // 按 videoConditionPlan 的张数裁切。首帧占 1 个名额，总数不超过厂商上限。
+    function applyVideoFit(frameBlob, refs, spec) {
+      const plan = spec || {};
       const all = Array.isArray(refs) ? refs.slice() : [];
-      if (hardFrame) {
-        return {
-          blobs: frameBlob ? [frameBlob] : [],
-          keptRefs: [],
-          plan: { state: frameBlob ? 'sent' : 'missing', field: frameBlob ? 'first_frame' : '', sendFrame: !!frameBlob, sendRefs: 0, dropped: 0, say: frameBlob ? '将送出分镜首帧。' : '这一段视频没有分镜首帧，也没有角色参考图，不能只靠文字生成。' },
-        };
-      }
-      const plan = videoConditionPlan({ hasFrameBlob: !!frameBlob, refCount: all.length, frameMode: 'auto', refCap: cap });
       if (plan.state === 'downgraded') {
         const keep = Math.max(0, plan.sendRefs - 1);
         const kept = all.slice(0, keep);
         return { blobs: frameBlob ? [frameBlob].concat(kept) : kept, keptRefs: kept, plan };
       }
       if (plan.sendFrame && frameBlob) return { blobs: [frameBlob], keptRefs: [], plan };
-      const kept = all.slice(0, plan.sendRefs);
+      const kept = all.slice(0, plan.sendRefs || 0);
       return { blobs: kept, keptRefs: kept, plan };
-    }
-    function imageRefPayload(dataUrls, mode) {
-      const urls = (dataUrls || []).filter(Boolean);
-      if (!urls.length) return { state: 'none', field: '', count: 0, ok: true };
-      if (mode === 'edits') return { state: 'sent', field: 'image[]', count: urls.length, ok: true };
-      if (mode === 'compshare' || mode === 'sanbao') return { state: 'sent', field: 'reference', count: urls.length, ok: true };
-      return { state: 'sent', field: 'image', count: urls.length, ok: true, image: urls };
     }
     function markDownstreamStale(nodeId) {
       const ids = [];
@@ -11752,7 +11736,7 @@ function queueThumb(assetId) {
         for (const id of ids) {
           const nd = s.graph.nodes[id];
           if (!nd || !nd.data) continue;
-          if (nd.data.mvRole === 'shot' || nd.data.mvRole === 'video') {
+          if (nd.type === 'image' || nd.type === 'video' || nd.type === 'finalcut' || nd.data.mvRole === 'shot' || nd.data.mvRole === 'video') {
             nd.data.needRegen = true;
             if (nd.type === 'video') nd.data.mvStale = true;
           }
@@ -11895,6 +11879,11 @@ function queueThumb(assetId) {
       }
       const blocked = mvRefBlock(n);
       if (blocked) throw new Error(blocked);
+      if (type !== 'audio') {
+        const kind = type === 'finalcut' ? 'compose' : type === 'storyboard' ? 'storyboard' : (type === 'script' || type === 'text' ? 'text' : type);
+        const opened = await claimJob(n, kind, '正在生成');
+        if (opened && opened.joined) return true;
+      }
       const settings = loadSettings(); // 模型解析（供应商+模型）用
       const ctl = new AbortController();
       const parentAbort = genAbort.ctl;
@@ -11927,12 +11916,16 @@ function queueThumb(assetId) {
         }
         s.running = true; // 单节点触发（对话/节点按钮）也显示停止按钮
       });
-      flushSave(); // 立刻落盘 + 推送 Host：切走画面/对话查询都能看到"运行中"
+      await flushSave(); // 立刻落盘 + 推送 Host：切走画面/对话查询都能看到"运行中"
       try {
-        if (type === 'script') { await genScriptNode(n); return true; }
-        if (type === 'storyboard') { await genStoryboardNode(n); return true; }
+        if (type !== 'audio') {
+          const gate = await hostRpc('edgeBlock', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id });
+          if (gate && gate.say) throw new Error(gate.say);
+        }
+        if (type === 'script') { await genScriptNode(n); await hostRpc('jobFinish', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'text', line: '生成完成' }).catch(() => {}); return true; }
+        if (type === 'storyboard') { await genStoryboardNode(n); await hostRpc('jobFinish', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'storyboard', line: '生成完成' }).catch(() => {}); return true; }
         if (type === 'audio') { await genAudioNode(n); return true; }
-        if (type === 'finalcut') { await genFinalCutNode(n); return true; }
+        if (type === 'finalcut') { await genFinalCutNode(n); await hostRpc('jobFinish', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: 'compose', line: '生成完成' }).catch(() => {}); return true; }
         if (type !== 'image' && type !== 'video') throw new Error(T('nodeNotRunnable'));
         let prompt = resolvePrompt(n);
         const bible = loadBible(S.activeId);
@@ -11942,13 +11935,13 @@ function queueThumb(assetId) {
         if (type === 'image') {
           // 参考图 = **只取连进 ref 口的连线**（顺序 refOrder）；@引用只注入文字设定，不追加图片
           const { refs, entities } = await collectRefs(n, prompt, bible);
-          if (n.data && n.data.mvRole === 'shot') {
-            const wired = S.graph.edges.filter((e) => e.toNode === n.id && (e.toPort === 'ref' || e.toPort === 'frame'));
+          const wired = S.graph.edges.filter((e) => e.toNode === n.id && (e.toPort === 'ref' || e.toPort === 'frame'));
+          if (wired.length) {
             const ready = wired.filter((e) => {
               const src = S.graph.nodes[e.fromNode];
               return src && src.data && src.data.assetId;
             });
-            if (!ready.length) throw new Error('这一张分镜没有连上已生成的角色或场景图片，不能只靠文字生成。');
+            if (!ready.length) throw new Error('连着的参考图还没有生成结果，不能只靠文字生成。');
             if (!refs.length) throw new Error('参考图连上了，但图片文件没有读到，本次没有发送。');
           }
           const metas = refs.map((r) => ({ blob: r.blob, name: r.name, category: r.category, assetId: r.assetId }));
@@ -12146,11 +12139,9 @@ function queueThumb(assetId) {
           if (n.data && n.data.mvRole === 'video') {
             const vendor = detectVideoVendor(mcfg);
             const caps = (typeof VIDEO_REF_CAPS !== 'undefined' && VIDEO_REF_CAPS[vendor]) || { img: 8 };
-            const delivery = videoConditionPlan({
-              hasFrameBlob: !!frameBlob,
-              refCount: refs.length,
-              frameMode: n.data.frameMode || 'auto',
-              refCap: caps.img,
+            const delivery = await hostRpc('mediaFit', {
+              kind: 'video', hasFrame: !!frameBlob, refCount: refs.length,
+              frameMode: n.data.frameMode || 'auto', refCap: caps.img, hard: n.data.frameMode === 'hard',
             });
             update((s) => { const nd = s.graph.nodes[n.id]; if (nd) nd.data.refDelivery = delivery; });
             if (delivery.state === 'missing' || delivery.state === 'unsupported') throw new Error(delivery.say);
@@ -12264,6 +12255,9 @@ function queueThumb(assetId) {
             } catch { /* 校验失败不影响产物 */ }
           }
         }
+        if (type === 'image' || type === 'video') {
+          await hostRpc('jobFinish', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: type, line: '生成完成' }).catch(() => {});
+        }
         return true;
       } catch (err) {
         const stopped = !!(ctl.signal && ctl.signal.aborted);
@@ -12281,6 +12275,9 @@ function queueThumb(assetId) {
             nd.data.error = String((err && err.message) || err);
           }
         });
+        if (type !== 'audio') {
+          hostRpc('jobFail', { projectId: S.activeId, canvasId: activeCanvasId(), nodeId: n.id, kind: type === 'finalcut' ? 'compose' : type === 'storyboard' ? 'storyboard' : (type === 'script' || type === 'text' ? 'text' : type), error: String((err && err.message) || err) }).catch(() => {});
+        }
         if (!stopped) {
           const decided = await rememberFailure(n.id, err, genParamsOf(n), roundAuto);
           if (decided.go) {
@@ -12340,6 +12337,7 @@ function queueThumb(assetId) {
           }
         }
         schedulePushFor(nodeId);
+        markDownstreamStale(nodeId);
         // 旧项目的「生成 → 资产」两节点链路（out → in）继续把结果同步给下游资产节点；
         // 新画布的合并节点不再走 in 端口，因此不会误把下游参考图节点的 assetId 覆盖掉。
         for (const e of s.graph.edges) {
@@ -16502,6 +16500,7 @@ function queueThumb(assetId) {
           mode === 'create' && url && !(an && an.sections) ? h('button', {
             type: 'button', className: 'dshic-mtl-go', 'data-tl-analyze': '1', disabled: !!busy, onClick: () => startAnalyze(false),
           }, busy === 'analyze' ? (n.data.analyzeProgress || T('tlAnalyzing')) : T('tlStartAnalyze')) : null,
+          n.data.timelineOffer ? h('span', { className: 'dshic-hint', 'data-tl-offer': '1' }, n.data.timelineOffer) : null,
           mode === 'create' && an && an.sections && !n.data.sectionsConfirmed ? h('button', {
             type: 'button', className: 'dshic-mtl-go', 'data-tl-confirm': '1', disabled: !!busy, onClick: confirmSections,
           }, T('tlConfirmSections')) : null,

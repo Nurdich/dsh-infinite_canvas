@@ -27,6 +27,7 @@ function httpResponse(status, body, contentType) {
     ok: status >= 200 && status < 300,
     status,
     headers: { get: (h) => (String(h).toLowerCase() === 'content-type' ? contentType : '') },
+    text: async () => text,
     arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
   };
 }
@@ -35,6 +36,21 @@ const calls = [];
 let script = 'image-ok';
 async function fetchStub(_url, init) {
   const payload = JSON.parse(init.body);
+  if (String(_url).includes('/api/rpc')) {
+    const AD = await import(pathToFileURL(path.join(ROOT, 'audio-drive.js')).href);
+    const a = payload.args || {};
+    if (payload.method === 'mediaFit') {
+      if (a.kind === 'image') {
+        const spec = AD.imageRefPayload(Array(Math.max(0, Number(a.count) || 0)).fill('x'), a.mode || 'generations');
+        return httpResponse(200, { field: spec.field, state: spec.state, count: spec.count }, 'application/json');
+      }
+      if (a.hard) return httpResponse(200, { state: 'sent', sendFrame: !!a.hasFrame, sendRefs: 0, dropped: Number(a.refCount) || 0, say: '将送出分镜首帧。' }, 'application/json');
+      return httpResponse(200, AD.videoConditionPlan({ hasFrameBlob: !!a.hasFrame, refCount: a.refCount, frameMode: a.frameMode || 'auto', refCap: a.refCap }), 'application/json');
+    }
+    if (payload.method === 'jobOpen') return httpResponse(200, { ok: true, joined: false, job: { status: 'running', line: a.line || '' } }, 'application/json');
+    if (String(payload.method || '').startsWith('job')) return httpResponse(200, { ok: true, job: { status: 'done', followUp: null } }, 'application/json');
+    if (payload.method === 'edgeBlock') return httpResponse(200, { ok: true, missing: [], say: '' }, 'application/json');
+  }
   calls.push(payload);
   const up = String(payload.url || '');
   const upstream = payload.body || {};
