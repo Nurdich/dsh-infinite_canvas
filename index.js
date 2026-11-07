@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { normalizeSkillProfile, DEFAULT_SKILL_PROFILE } from './index-core-skill-profile.js';
-import { mergeDocWrite, createJobBook, decideAnalyze, decideTimeline, edgeBlock, edgeBlockSay, honestSay, mediaKind, PORTS as PORT_TABLE, normalizeNodeType } from './gen-pool.js';
+import { mergeDocWrite, createJobBook, decideAnalyze, decideTimeline, edgeBlock, edgeBlockSay, honestSay, mediaKind, confirmPaidJob, paidConfirmLine, nextMvPlanStep, PORTS as PORT_TABLE, normalizeNodeType } from './gen-pool.js';
 import {
   SUGGESTED_MODEL_ID,
   USER_MODEL_NAME,
@@ -69,9 +69,10 @@ import {
   videoConditionPlan,
   heuristicAnalysis,
   mockAnalysis,
+  refProgress,
 } from './audio-drive.js';
 import { initPackBase, packInventory, allowedIds } from './skill-pack-loader.js';
-import { buildSkillPack, SKILL_CATALOG, renderInventory, renderProfile } from './skill-pack.js';
+import { buildSkillPack, buildPromptLock, SKILL_CATALOG, renderInventory, renderProfile } from './skill-pack.js';
 
 const jobBook = createJobBook();
 function rememberJob(node, job) {
@@ -2720,6 +2721,25 @@ async function canvasRunNode(args) {
   }
   const blocked = edgeBlock(node, doc.edges, doc.nodes);
   if (blocked.length && node.type !== 'audio') throw new Error(edgeBlockSay(blocked));
+  const paidKind = node.type === 'finalcut' ? 'compose' : mediaKind(node.type);
+  const paid = confirmPaidJob({
+    kind: paidKind,
+    source: (args && args.source) || 'assistant',
+    confirmed: !!(args && args.confirmed),
+    nodeId,
+    label: (node.data && node.data.label) || '',
+    provider: (node.data && node.data.providerName) || '',
+    model: (node.data && (node.data.imageModel || node.data.videoModel || node.data.model)) || '',
+    count: Number(node.data && node.data.imageCount) || Number(node.data && node.data.count) || 1,
+    seconds: node.data && (node.data.duration || node.data.durationSec) || '',
+  });
+  if (!paid.allow) {
+    return {
+      ok: true, needsConfirm: true, projectId: pid, ...(canvasId ? { canvasId } : {}),
+      nodeId, type: node.type, label: (node.data && node.data.label) || '',
+      preview: paid.preview, text: paidConfirmLine(paid.preview),
+    };
+  }
   const cfg = readIcConfig();
   cfg.ui = { ...(cfg.ui || {}), runRequest: { projectId: pid, canvasId, nodeId, at: Date.now() } };
   writeIcConfig(cfg);
@@ -3480,7 +3500,7 @@ function findTypedNode(doc, nodeId, type) {
   const list = Object.values(doc.nodes || {}).filter((n) => n && n.type === type);
   return list[list.length - 1] || null;
 }
-async function canvasAnalyzeAudio(args) {
+async function canvasAnalyzeAudio(args, completeFn) {
   const id = String((args && args.projectId) || '');
   const canvasId = toolCanvasId(args);
   let doc = readToolDoc(args);
@@ -3516,6 +3536,7 @@ async function canvasAnalyzeAudio(args) {
     const opened = jobBook.open({
       nodeId: node.id, kind: 'analyze', status: 'queued', owner: '',
       line: '歌已经在节点里。已交给画布上的同一次听歌，还没有结果。',
+      followUp: (args && args.continueMv) ? { pipeline: 'mv', style: String((args && args.style) || '') } : null,
     });
     rememberJob(node, opened.job);
     doc.updatedAt = Date.now();
@@ -3528,6 +3549,9 @@ async function canvasAnalyzeAudio(args) {
   }
   if (analyzeDecision.action === 'missing-file') throw new Error('音频节点还没有歌曲：上传、从资产库放入，或传入 assetId / energy');
   if (node.data.analysis && !(args && (args.force === true || args.force === 'true'))) {
+    if (args && args.continueMv) {
+      return canvasMusicVideo({ ...args, nodeId: node.id, analysis: node.data.analysis, style: (args && args.style) || (node.data && node.data.styleText) || '' }, completeFn);
+    }
     const digest = analysisDigest(node.data.analysis);
     return {
       ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
@@ -3557,6 +3581,10 @@ async function canvasAnalyzeAudio(args) {
   markDocChanged(id, canvasId);
   const digest = analysisDigest(analysis);
   const how = analysis.method === 'model' ? ('模型 ' + (analysis.model || SUGGESTED_MODEL_ID)) : (analysis.method === 'webaudio' ? '本地节拍/能量' : '占位');
+  if (args && args.continueMv) {
+    const laid = await canvasMusicVideo({ ...args, nodeId: node.id, analysis, style: (args && args.style) || '' }, completeFn);
+    return laid;
+  }
   return {
     ok: true, projectId: id, ...(canvasId ? { canvasId } : {}), nodeId: node.id,
     cached: false, deferred: false, analysis: digest,
@@ -3570,7 +3598,10 @@ function upsertMvNode(doc, mvKey, type, label, data) {
   const payload = { ...(data || {}), label: String(label || '').slice(0, 40), mvKey };
   if (existing) {
     existing.type = type;
-    existing.data = { ...(existing.data || {}), ...payload };
+    const keepLook = !!(existing.data && existing.data.refLock && existing.data.assetId);
+    existing.data = keepLook
+      ? { ...(existing.data || {}), ...payload, prompt: existing.data.prompt, assetId: existing.data.assetId, refLock: true, status: existing.data.status || 'done' }
+      : { ...(existing.data || {}), ...payload };
     return existing;
   }
   const pos = nextNodePos(doc, type);
@@ -3796,7 +3827,60 @@ function layMusicVideo(doc, audio, pkg) {
   doc.bibleUpdatedAt = Date.now();
   return { boards, videos, cut, refNodes };
 }
-async function ensureMusicPackage(analysis, args, completeFn) {
+async function skillTextFor(doc, kind) {
+  try {
+    const built = await buildSkillPack({ kind, profile: doc && doc.skillProfile, hereDir: HERE, zh: true });
+    return (built && built.text) || '';
+  } catch { return ''; }
+}
+function defaultMusicForm(doc) {
+  try {
+    const inv = packInventory(HERE);
+    const allow = allowedIds(inv);
+    const base = normalizeSkillProfile(doc.skillProfile, allow);
+    if (base.form) return base;
+    const next = normalizeSkillProfile({ ...base, form: 'music-video' }, allow);
+    if (next.form) {
+      doc.skillProfile = next;
+      doc.skillUpdatedAt = Date.now();
+    }
+    return next;
+  } catch { return null; }
+}
+function mvConfirmStop(doc, audio) {
+  const kids = Object.values(doc.nodes || {}).filter((n) => n && n.data && n.data.mvFrom === audio.id);
+  const progress = refProgress(kids.map((n) => ({
+    role: n.data.mvRole, name: n.data.refName, assetId: n.data.assetId, locked: n.data.refLock,
+    sceneIndex: n.data.mvIndex,
+  })));
+  const step = nextMvPlanStep({
+    hasAudio: true,
+    hasAnalysis: !!(audio.data && audio.data.analysis),
+    hasPackage: !!(audio.data && audio.data.mvPackage),
+    onCanvas: kids.some((n) => n.data && (n.data.mvRole === 'shot' || n.data.mvRole === 'char')),
+    missingRefs: (progress.characters.total - progress.characters.have) + (progress.locations.total - progress.locations.have),
+    unlockedRefs: Math.max(0, progress.characters.have - progress.characters.locked) + Math.max(0, progress.locations.have - progress.locations.locked),
+    missingShots: Math.max(0, progress.shots.total - progress.shots.have),
+    missingVideos: Math.max(0, progress.videos.total - progress.videos.have),
+  });
+  if (step.step === 'need-lock') {
+    return { text: '角色和场景图还没定稿。定稿后才能生成分镜。不要换一张新的脸。' };
+  }
+  if (step.step !== 'confirm-refs' && step.step !== 'confirm-shots' && step.step !== 'confirm-videos') return null;
+  const gate = confirmPaidJob({
+    kind: step.kind, source: 'assistant', confirmed: false, count: step.count,
+    nodeId: audio.id, label: (audio.data && audio.data.label) || '',
+  });
+  const clientJob = step.step === 'confirm-videos' ? 'gen-videos' : step.step === 'confirm-shots' ? 'gen-shots' : 'gen-refs';
+  return {
+    needsConfirm: true,
+    clientJob,
+    args: { count: step.count, audioId: audio.id },
+    preview: gate.preview,
+    text: paidConfirmLine(gate.preview),
+  };
+}
+async function ensureMusicPackage(analysis, args, completeFn, skillText) {
   let pkg = args && args.package;
   if (typeof pkg === 'string') { try { pkg = JSON.parse(pkg); } catch { pkg = null; } }
   const style = String((args && (args.style || args.brief)) || '');
@@ -3810,9 +3894,10 @@ async function ensureMusicPackage(analysis, args, completeFn) {
     });
     if (analysisIsThin(analysis) && typeof completeFn === 'function') {
       try {
+        const castLine = (pkg.characters || []).map((c) => c.name + '：' + (c.desc || '')).join('；');
         const res = await completeFn({
-          system: '你是音乐 MV 导演。只返回 JSON，不要改时间码，不要写散文摘要代替分镜。',
-          user: llmCreativeUserPrompt(pkg) + (style ? ('\n用户想要的风格：' + style) : '') + (args && args.retryNote ? ('\n上次失败后的调整：' + String(args.retryNote).slice(0, 400)) : ''),
+          system: [skillText, '你是音乐 MV 导演。只返回 JSON，不要改时间码，不要写散文摘要代替分镜。角色名和外貌必须沿用下面这份，不要另起一张脸。'].filter(Boolean).join('\n'),
+          user: llmCreativeUserPrompt(pkg) + (castLine ? ('\n已有角色：' + castLine) : '') + (style ? ('\n用户想要的风格：' + style) : '') + (args && args.retryNote ? ('\n上次失败后的调整：' + String(args.retryNote).slice(0, 400)) : ''),
           temperature: 0.4,
         });
         const text = res && typeof res === 'object' ? res.text : String(res || '');
@@ -3851,18 +3936,13 @@ async function canvasMusicVideo(args, completeFn) {
   if (style) audio.data.styleText = style;
   absorbMvNodes(doc, audio);
   const reuse = !!(audio.data && audio.data.mvPackage) && !(args && (args.force || args.regenerate || args.package)) && !styleChanged;
+  const skillText = await skillTextFor(doc, 'storyboard');
   const pkg = reuse
     ? audio.data.mvPackage
-    : await ensureMusicPackage(analysis, { ...args, style: style || prevStyle, brief: style || prevStyle, force: true }, completeFn);
+    : await ensureMusicPackage(analysis, { ...args, style: style || prevStyle, brief: style || prevStyle, force: true }, completeFn, skillText);
   audio.data.mvPackage = pkg;
   const laid = layMusicVideo(doc, audio, pkg);
-  try {
-    const inv = packInventory(HERE);
-    const allow = allowedIds(inv);
-    const base = normalizeSkillProfile(doc.skillProfile, allow);
-    doc.skillProfile = normalizeSkillProfile({ ...base, form: 'music-video' }, allow);
-    doc.skillUpdatedAt = Date.now();
-  } catch { /* 技能包缺失不阻断 */ }
+  defaultMusicForm(doc);
   doc.updatedAt = Date.now();
   writeToolDoc(args, doc);
   markDocChanged(id, canvasId);
@@ -3880,10 +3960,10 @@ async function canvasMusicVideo(args, completeFn) {
     sceneCount: (pkg.scenes || []).length,
     total: pkg.durationSec,
     segmentCount: (pkg.scenes || []).length,
-    text: '已生成整支 MV，不是一段摘要。共 ' + (pkg.scenes || []).length + ' 场 / ' + shotCount + ' 镜 / ' + pkg.durationSec + 's，每场 ≤15 秒并卡在重拍上。'
-      + '设定集已写入角色/场景/道具，画布上有参考图、每场分镜表、每场视频（尾帧相接）和接了原曲的成片。'
-      + (sample ? ('\n第一镜视频提示词：' + String(sample.videoPrompt || sample.visual || '').slice(0, 180)) : '')
-      + '\n不要只把歌曲摘要念给用户。要出片就 canvas_run_node 这些视频节点，或让用户在音乐时间轴上点「生成全部」。',
+    ...(mvConfirmStop(doc, audio) || {}),
+    text: '已把时间轴和角色铺到画布。共 ' + (pkg.scenes || []).length + ' 场 / ' + shotCount + ' 镜 / ' + pkg.durationSec + 's。'
+      + (sample ? ('\n第一镜：' + String(sample.videoPrompt || sample.visual || '').slice(0, 180)) : '')
+      + '\n' + ((mvConfirmStop(doc, audio) || {}).text || '生成画面之前会先确认。'),
   };
 }
 
@@ -3927,7 +4007,7 @@ async function canvasMusicTimeline(args, completeFn) {
   audio.data.analysis = analysis;
   audio.data.styleText = style;
   audio.data.status = 'done';
-  const pkg = await ensureMusicPackage(analysis, { ...args, style, brief: style, force: true }, completeFn);
+  const pkg = await ensureMusicPackage(analysis, { ...args, style, brief: style, force: true }, completeFn, await skillTextFor(doc, 'storyboard'));
   audio.data.mvPackage = pkg;
   doc.updatedAt = Date.now();
   writeToolDoc(args, doc);
@@ -4222,7 +4302,7 @@ export function apply(ctx) {
       if (name === 'canvas_connect') return canvasConnect(a);
       if (name === 'canvas_delete_node') return canvasDeleteNode(a);
       if (name === 'canvas_run_node') return canvasRunNode(a);
-      if (name === 'canvas_analyze_audio') return canvasAnalyzeAudio(a);
+      if (name === 'canvas_analyze_audio') return canvasAnalyzeAudio(a, (req) => completeMvText({ ...(req || {}), progressId: a.progressId, phase: 'timeline' }));
       if (name === 'canvas_music_timeline') return canvasMusicTimeline(a, (req) => completeMvText({ ...(req || {}), progressId: a.progressId, phase: 'timeline' }));
       if (name === 'canvas_music_timeline_edit') return canvasMusicTimelineEdit(a);
       if (name === 'canvas_music_video') return canvasMusicVideo(a, (req) => completeMvText({ ...(req || {}), progressId: a.progressId, phase: 'timeline' }));
@@ -4704,7 +4784,11 @@ export function apply(ctx) {
         const opened = jobBook.open({
           nodeId: a.nodeId, kind: a.kind, owner: a.owner || '', status: a.status, phase: a.phase,
           line: a.line, windowCount: a.windowCount, force: a.force === true,
+          source: a.source || '', confirmed: a.confirmed === true,
+          label: a.label || '', provider: a.provider || '', model: a.model || '',
+          count: a.count, seconds: a.seconds,
         });
+        if (opened.needsConfirm) return { ok: true, needsConfirm: true, preview: opened.preview, text: paidConfirmLine(opened.preview) };
         const doc = readToolDoc(a);
         const node = doc.nodes && doc.nodes[a.nodeId];
         if (node) { rememberJob(node, opened.job); doc.updatedAt = Date.now(); writeToolDoc(a, doc); }
@@ -4735,6 +4819,26 @@ export function apply(ctx) {
       async jobGet(args) {
         const a = args || {};
         return { ok: true, job: jobBook.get(a.nodeId, a.kind) };
+      },
+      async mvContinue(args) {
+        const a = args || {};
+        return canvasMusicVideo({ ...a, style: a.style || '' }, (req) => completeMvText({ ...(req || {}), progressId: a.progressId, phase: 'timeline' }));
+      },
+      async skillSlice(args) {
+        const a = args || {};
+        const pid = String(a.projectId || '');
+        const doc = pid ? readToolDoc(a) : { skillProfile: a.profile || {} };
+        const built = await buildSkillPack({ kind: a.kind || 'script', profile: a.profile || doc.skillProfile, hereDir: HERE, zh: a.zh !== false, force: !!a.force });
+        return { ok: true, text: built.text, bytes: built.bytes, profile: built.profile };
+      },
+      async skillLock(args) {
+        const a = args || {};
+        const doc = a.projectId ? readToolDoc(a) : { skillProfile: a.profile || {} };
+        const text = await buildPromptLock({
+          kind: a.kind, medium: a.medium || 'video', profile: a.profile || doc.skillProfile,
+          hereDir: HERE, fxMotion: !!a.fxMotion,
+        });
+        return { ok: true, text: text || '' };
       },
       async edgeBlock(args) {
         const doc = readToolDoc(args || {});
@@ -4896,12 +5000,14 @@ export function apply(ctx) {
         let reasoning = '';
         let clientJob = '';
         const scopeId = String((args && args.scopeId) || '');
-        const runOne = async (action) => {
+        const runOne = async (action, confirmedRun) => {
           const result = await dispatchCanvasAssistant(action.tool, {
             ...(action.args || {}),
             projectId: args && args.projectId,
             canvasId: toolCanvasId(args),
             progressId: args && args.progressId,
+            confirmed: !!confirmedRun,
+            source: confirmedRun ? 'user' : 'assistant',
           });
           const nodeId = (action.args && (action.args.nodeId || action.args.fromNode)) || (result && result.nodeId) || '';
           steps.push({
@@ -4921,8 +5027,12 @@ export function apply(ctx) {
           const gate = gateCanvasAction(pending, { confirmed: true, digest, modelLabel: route.label });
           if (gate.allow) {
             try {
-              await runOne(pending);
-              say = pending.say || '已执行。';
+              const result = await runOne(pending, true);
+              say = (result && result.text) || pending.say || '已执行。';
+              if (result && result.needsConfirm) {
+                blocked = { clientJob: result.clientJob || '', tool: pending.tool, args: result.args || pending.args || {}, say: result.text, preview: result.preview || null };
+                say = result.text;
+              }
             } catch (e) {
               say = '执行失败：' + String((e && e.message) || e);
             }
@@ -4935,8 +5045,14 @@ export function apply(ctx) {
             let modelText = '';
             let raw = '';
             let native = false;
+            let skillLine = '';
+            try {
+              const inv = packInventory(HERE);
+              const profile = normalizeSkillProfile(doc.skillProfile, allowedIds(inv));
+              skillLine = '\n当前技能配置：' + renderProfile(profile, inv, true) + '。写故事、分镜和提示词时按这个导演、题材、规格和影调，不要另起一套。';
+            } catch { /* 技能包缺失时照常规划 */ }
             if (route.route === 'omni') {
-              const system = canvasAssistantSystem() + '\n画布摘要：' + JSON.stringify(digest).slice(0, 6000);
+              const system = canvasAssistantSystem() + skillLine + '\n画布摘要：' + JSON.stringify(digest).slice(0, 6000);
               const user = userForModel + (done.length ? '\n已执行：' + JSON.stringify(done).slice(0, 1500) : '');
               let extra = null;
               try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
@@ -5001,7 +5117,7 @@ export function apply(ctx) {
             } else if (step === 0) {
               try {
                 const r = await complete({
-                  system: canvasAssistantSystem(),
+                  system: canvasAssistantSystem() + skillLine,
                   user: userForModel + '\n画布摘要：' + JSON.stringify(digest).slice(0, 4000)
                     + '\n只回复一个 JSON：{"say":"","tool":"","args":{}}。tool 必须是已有 canvas_ 工具名，没有动作时留空。',
                 });
@@ -5036,7 +5152,12 @@ export function apply(ctx) {
               break;
             }
             try {
-              const result = await runOne(action);
+              const result = await runOne(action, false);
+              if (result && result.needsConfirm) {
+                blocked = { clientJob: result.clientJob || '', tool: '', args: result.args || action.args || {}, say: result.text, preview: result.preview || null };
+                say = result.text;
+                break;
+              }
               done.push({ tool: action.tool, ok: !(result && result.inProgress), inProgress: !!(result && result.inProgress), text: result && result.text });
               say = (result && result.text) || action.say || ('已执行 ' + action.tool);
               if (!native || !action.native) break;

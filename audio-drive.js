@@ -7,6 +7,7 @@
  * 模型 id：用户口头的「Qwen3.8-Omni-Flash」对应百炼 / DashScope 官方 id `qwen3.8-omni-flash`
  * （2026-10 文档）。旧的 `qwen3-omni-flash` 仍可在设置里手填。
  */
+import { confirmPaidJob, paidConfirmLine } from './gen-pool.js';
 
 export const AUDIO_ANALYSIS_SCHEMA = 'dshic.audio-analysis.v1';
 /** 设置里预填的官方模型 id。 */
@@ -492,6 +493,7 @@ export function canvasDigest(graph, selection) {
       label: String(d.label || '').slice(0, 40),
       status: d.status || '',
       hasAsset: !!(d.assetId || d.url),
+      hasAnalysis: !!(d.analysis && (d.analysis.sections || d.analysis.durationSec)),
       assetId: d.assetId || '',
       mvRole: d.mvRole || '',
       mvFrom: d.mvFrom || '',
@@ -556,7 +558,9 @@ export function canvasAssistantSystem() {
     '你可以操作文本、剧本、分镜、图片、视频、音频和成片节点。',
     '用户说「这个」或 this 时，指的是摘要里 selected 为 true 的节点。',
     '新建、改字、连线、分析歌曲、铺时间轴、推到画布可以直接做。',
-    '生成图片、生成视频、成片合成、删除节点必须先停下来等用户确认，不要连续调用。',
+    '生成图片、生成视频、语音、音乐、成片，以及删除节点，必须先停下来等用户确认，不要连续调用。',
+    '用户给一首歌并要求做成 MV 时，一直做到时间轴和角色节点为止，然后停在付费确认上。',
+    '已经定稿的角色沿用同一张参考图和同一段外貌，不要再生成一张新的脸。',
     '节点失败时先看 failure：说明原因，并按其中的改动再生成。余额不足或密钥无效不要重试。',
     '一次只调用一个工具。没有工具要调用时，用一句中文回答。',
     '用户附上的图片、音频或视频会写在消息里，带 assetId。要把附件放进画布，用 canvas_create_node 的 assetId 建成图片、视频或音频节点，再用 canvas_connect 连到要生成的节点。',
@@ -568,57 +572,49 @@ function digestNode(digest, id) {
   return ((digest && digest.nodes) || []).find((n) => n.id === id) || null;
 }
 
-export function canvasActionCost(name, args, digest) {
-  if (name === 'canvas_delete_node') return { spends: false, destructive: true };
-  if (name === 'canvas_run_node') {
-    const id = args && (args.nodeId || args.id);
-    const node = digestNode(digest, id) || ((digest && digest.selection) || [])[0] || null;
-    const type = node && node.type;
-    if (type === 'audio' || type === 'text' || type === 'script' || type === 'storyboard') {
-      return { spends: false, destructive: false, type };
-    }
-    return { spends: true, destructive: false, type: type || '' };
-  }
-  return { spends: false, destructive: false };
+function paidPreview(node, kind, extra) {
+  const gate = confirmPaidJob({
+    kind,
+    source: 'assistant',
+    confirmed: !!(extra && extra.confirmed),
+    count: (extra && extra.count) || (kind === 'image' ? (Number(node && node.count) || 1) : 1),
+    nodeId: (extra && extra.nodeId) || (node && node.id) || '',
+    label: (node && node.label) || '',
+    model: (node && node.model) || (extra && extra.model) || '',
+    seconds: kind === 'video' ? (node && node.duration) : '',
+  });
+  return gate;
 }
 
-export function canvasSpendPreview(digest, action, modelLabel) {
-  const id = action && action.args && action.args.nodeId;
-  const node = digestNode(digest, id) || ((digest && digest.selection) || [])[0] || null;
-  const type = (action && action.type) || (node && node.type) || '';
-  const model = (node && node.model) || modelLabel || '';
-  if (action && action.destructive) return { kind: 'delete', count: 1, nodeId: id || (node && node.id) || '' };
-  if (type === 'image') return { kind: 'image', count: Number(node && node.count) || 1, model };
-  if (type === 'video') return { kind: 'video', count: 1, seconds: node && node.duration, model };
-  if (type === 'finalcut' || type === '') return { kind: type === 'finalcut' ? 'compose' : 'run', count: 1, seconds: node && node.duration, model };
-  return { kind: 'run', count: 1, model };
-}
-
-export function canvasPreviewLine(preview) {
-  const p = preview || {};
-  if (p.kind === 'delete') return '将删除 ' + (p.count || 1) + ' 个节点';
-  if (p.kind === 'compose') return '将合成成片' + (p.model ? ' · ' + p.model : '');
-  if (p.kind === 'image') return '将生成图片 ' + (p.count || 1) + ' 张' + (p.model ? ' · ' + p.model : '');
-  if (p.kind === 'video') return '将生成视频 ' + (p.count || 1) + ' 条 · ' + (p.seconds || '?') + 's' + (p.model ? ' · ' + p.model : '');
-  return '需要确认后才会执行';
-}
-
+/** 付费与否只问 gen-pool 的 confirmPaidJob。删除仍在这里，因为它不花钱。 */
 export function gateCanvasAction(action, opts) {
-  if (action && (action.clientJob === 'regen-failed' || action.clientJob === 'gen-refs' || action.clientJob === 'gen-shots' || action.clientJob === 'gen-videos')) {
-    if (action.spends && !(opts && opts.confirmed)) {
-      const count = (action.args && action.args.count) || 1;
-      return { allow: false, say: '将按失败原因重生成 ' + count + ' 项。', preview: { kind: 'run', count, model: (opts && opts.modelLabel) || '' } };
-    }
+  if (!action) return { allow: true, say: '' };
+  const confirmed = !!(opts && opts.confirmed);
+  const digest = opts && opts.digest;
+  const model = (opts && opts.modelLabel) || '';
+  if (action.clientJob) {
+    const kind = action.clientJob === 'gen-videos' ? 'video'
+      : (action.clientJob === 'gen-refs' || action.clientJob === 'gen-shots' || (action.clientJob === 'regen-failed' && action.spends)) ? 'image'
+        : '';
+    if (!kind) return { allow: true, say: action.say || '' };
+    const gate = paidPreview(null, kind, { confirmed, count: action.args && action.args.count, nodeId: action.args && action.args.audioId, model });
+    if (!gate.allow) return { allow: false, say: paidConfirmLine(gate.preview), preview: gate.preview };
     return { allow: true, say: action.say || '' };
   }
-  if (!action || !action.tool) return { allow: true, say: (action && action.say) || '' };
-  const digest = opts && opts.digest;
-  const cost = canvasActionCost(action.tool, action.args, digest);
-  action.spends = cost.spends;
-  action.destructive = cost.destructive;
-  if ((cost.spends || cost.destructive) && !(opts && opts.confirmed)) {
-    const preview = canvasSpendPreview(digest, { ...action, ...cost }, opts && opts.modelLabel);
-    return { allow: false, say: canvasPreviewLine(preview), preview };
+  if (!action.tool) return { allow: true, say: action.say || '' };
+  if (action.tool === 'canvas_delete_node') {
+    if (!confirmed) return { allow: false, say: '将删除 1 个节点', preview: { kind: 'delete', count: 1, nodeId: action.args && action.args.nodeId } };
+    return { allow: true, say: action.say || '' };
+  }
+  if (action.tool === 'canvas_run_node') {
+    const id = action.args && (action.args.nodeId || action.args.id);
+    const node = digestNode(digest, id) || ((digest && digest.selection) || [])[0] || null;
+    const type = node && node.type;
+    const kind = type === 'image' ? 'image' : type === 'video' ? 'video' : type === 'finalcut' ? 'compose' : '';
+    if (!kind) return { allow: true, say: action.say || '' };
+    const gate = paidPreview(node, kind, { confirmed, model });
+    if (!gate.allow) return { allow: false, say: paidConfirmLine(gate.preview), preview: gate.preview };
+    return { allow: true, say: action.say || '' };
   }
   return { allow: true, say: action.say || '' };
 }
@@ -700,8 +696,17 @@ export function keywordCanvasAction(message, digest, scopeId, attachments) {
   if (img && /参考/.test(text)) {
     return { tool: 'canvas_create_node', args: { type: 'image', name: img.name || '参考图', assetId: img.assetId }, say: '已把这张图放成节点。连到要生成的图片或视频上，生成请求会带上它的内容。' };
   }
-  if (song && /分析|听歌|听一下/.test(text)) {
-    return { tool: 'canvas_create_node', args: { type: 'audio', name: song.name || '歌曲', assetId: song.assetId }, say: '已把这首歌放成音频节点。再说一次分析，就会听这一首。' };
+  if ((song && /分析|听歌|听一下|做成/.test(text)) || /做成|做一支|音乐\s*MV/.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    const make = /做成|做一支|音乐\s*MV/.test(text);
+    if (audio && audio.hasAnalysis && make) {
+      return { tool: 'canvas_music_video', args: { nodeId: audio.id, style: text.slice(0, 200) }, say: '分析已经在。我铺时间轴和角色，生成画面之前会停下来等你确认。' };
+    }
+    return {
+      tool: 'canvas_analyze_audio',
+      args: { nodeId: audio && audio.id, assetId: song && song.assetId, name: (song && song.name) || '', continueMv: true },
+      say: '先听这首歌，听完就铺时间轴和角色。生成画面之前会停下来等你确认。',
+    };
   }
   const target = selectedOrScope(digest, scopeId);
   if (/生成全部|生成当前|到结尾|分镜图|出分镜/.test(text)) {
@@ -2634,9 +2639,11 @@ function writeShotCopy(ctx) {
   const bit = ctx.bit;
   const light = ctx.light;
   const cut = round1(ctx.cutAt);
+  const look = ctx.look ? ('外貌保持：' + ctx.look) : '';
   const visual = [
     ctx.scale + '，' + ctx.angle + '机位，运镜' + ctx.move,
     who + ' 在 ' + where + '，' + prop + ' 在画面里',
+    look,
     bit,
     '段落「' + secName + '」',
     ctx.hold ? '音乐继续，画面停住' : '',
@@ -2648,6 +2655,7 @@ function writeShotCopy(ctx) {
   const imagePrompt = [
     '电影关键帧，' + ctx.scale + '，' + ctx.angle + '机位',
     who + '，' + where + '，' + prop,
+    look,
     light,
     bit,
     ctx.plot ? ('这一拍：' + ctx.plot) : '',
@@ -2717,6 +2725,7 @@ export function planMusicVideoPackage(analysis, opts) {
         const bit = [beat && beat.plot, section.visual, bits[shotSerial % bits.length]].filter(Boolean).join('，');
         const copy = writeShotCopy({
           scale, move, angle, section, who, where, prop, light, bit,
+          look: [cast.characters[0].appearance && cast.characters[0].appearance.face, cast.characters[0].appearance && cast.characters[0].appearance.hair, cast.characters[0].desc].filter(Boolean).join('，'),
           plot: beat && beat.plot,
           cutAt: s0, dur: s1 - s0, hold: section.label === 'bridge' && si === 0,
         });

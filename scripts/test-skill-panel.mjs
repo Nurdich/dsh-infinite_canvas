@@ -433,23 +433,23 @@ if (TABS && CRAFT) {
   const lockCount = (runGen.match(/buildShotLockText\((?:'prompt'|lockKind)(?:,\s*\{[^}]*\})?\)/g) || []).length;
   ok(lockCount >= 2, 'buildShotLockText 应同时接在图片分支与视频分支（实际出现 ' + lockCount + ' 次）');
   ok(/设定图/.test(runGen), '图片分支缺少「设定图 → assets 切片」判定');
-  const lockFn = fnSlice('buildShotLockText');
-  ok(!!lockFn, '未能定位 buildShotLockText');
+  const skillSrc = fs.readFileSync(path.join(ROOT, 'skill-pack.js'), 'utf8');
+  const vlockStart = skillSrc.indexOf('async function buildVideoLock');
+  const vlockEnd = skillSrc.indexOf('export async function buildPromptLock');
+  const lockFn = skillSrc.slice(vlockStart, vlockEnd);
+  ok(vlockStart > 0 && lockFn.length > 40, '未能定位 buildVideoLock');
   ok(!/yamlBlock/.test(lockFn), '视频总控锁不得再注入透镜 YAML（导演语言已字段化进分镜）');
   ok(/negativePhrases/.test(lockFn), '视频总控锁未取负向词');
-  // 注入分工：教材长文（灯光规则/影调材质/题材颗粒/禁项）只在分镜层消化成逐镜字段，不进视频请求
   ok(!/pickSections/.test(lockFn), '视频总控锁不得倾倒教材小节全文');
   ok(!/常见场面颗粒|参考镜头|视觉母题/.test(lockFn), '视频总控锁注入了题材颗粒长文');
   ok(/成像底层/.test(lockFn), '视频总控锁缺影调美学短语（成像底层）');
-  ok(/类型负向词|交付规格/.test(lockFn), '视频总控锁缺规格的节奏约束');
+  ok(/交付规格/.test(lockFn), '视频总控锁缺规格的节奏约束');
   ok(/slice\(0,\s*6\)/.test(lockFn), '视频总控锁内联负向词应 ≤6 条（稀释规则）');
-  // 短路必须把「规格」算作一层（只选规格时也要注入）
-  ok(/if \(!profile\.lens && !profile\.look && !profile\.form && !\(profile\.genres \|\| \[\]\)\.length\) return '';/.test(lockFn),
-    '风格增强块的短路未包含 form（只选规格时不注入 → 与对话侧分叉）');
-  ok(/const hasAnyLayer = !!\(profile\.lens \|\| profile\.form \|\| profile\.look/.test(src),
-    'buildSkillPackText 的短路未包含 form');
-  ok(/if \(!hasAnyLayer && !o\.force\) return \{ text: '', bytes: 0 \};/.test(src),
-    'buildSkillPackText 缺少「四层全空则不注入」的短路（老项目行为会变）');
+  ok(/const hasAnyLayer = !!\(profile\.lens \|\| profile\.form \|\| profile\.look/.test(skillSrc),
+    '技能切片的短路未包含 form');
+  ok(/if \(!hasAnyLayer && !o\.force\)/.test(skillSrc),
+    '技能切片缺少「四层全空则不注入」的短路（老项目行为会变）');
+  ok(/hostRpc\('skillSlice'/.test(src) && /hostRpc\('skillLock'/.test(src), '画布没有改用宿主的同一份技能切片');
 }
 
 // ============================================================
@@ -457,12 +457,13 @@ if (TABS && CRAFT) {
 //    手写厂商结构化提示词尊重用户结构，不追加风格锁。
 // ============================================================
 {
-  ok(typeof CRAFT.buildShotLockText === 'function', '__DSH_IC_SKILLPACK__ 缺少 buildShotLockText');
-  if (typeof CRAFT.buildShotLockText === 'function') {
-    // buildShotLockText 必须支持显式 pid：否则测试只能依赖 S.activeId，真实调用与对话侧难以同口径回归
+  const { buildPromptLock } = await import(pathToFileURL(path.join(ROOT, 'skill-pack.js')).href);
+  const { initPackBase } = await import(pathToFileURL(path.join(ROOT, 'skill-pack-loader.js')).href);
+  initPackBase(ROOT);
+  const profileLock = { lens: 'fincher', genres: ['crime-police'], form: 'trailer', look: 'dark-myth-cg' };
+  {
     ok(/const pid = \(opts && opts\.pid\) \|\| S\.activeId;/.test(src), 'buildShotLockText 未支持 opts.pid');
-    CRAFT.saveSkillProfile('pVideoLock', { lens: 'fincher', genres: ['crime-police'], form: 'trailer', look: 'dark-myth-cg' });
-    const lock = await CRAFT.buildShotLockText('prompt', { pid: 'pVideoLock' });
+    const lock = await buildPromptLock({ hereDir: ROOT, profile: profileLock, medium: 'video', pack: P });
     ok(lock.startsWith('[全片风格锚]'), '视频总控锁缺少标准头');
     ok(lock.includes('影调质感'), '视频锁未注入影调美学短语（成像底层摘要）');
     ok(lock.includes('交付规格'), '视频锁未注入规格的节奏约束');
@@ -478,7 +479,7 @@ if (TABS && CRAFT) {
 
     // 图片锁功能回归：medium='image' 必须产出完整紧凑锁——此前 buildImageLockText 返回语句引用
     // 未定义的 EOL 抛 ReferenceError，被调用点 try/catch 静默吞掉：图片生成从未真正拿到风格锁且零测试覆盖
-    const imgLock = await CRAFT.buildShotLockText('prompt', { medium: 'image', pid: 'pVideoLock' });
+    const imgLock = await buildPromptLock({ hereDir: ROOT, profile: profileLock, medium: 'image', kind: 'prompt', pack: P });
     ok(imgLock.startsWith('[画面风格锁]'), '图片锁缺少标准头（EOL 未定义会让锁静默变空）');
     ok(imgLock.includes('画面风格：'), '图片锁缺镜头风格 bits（焦距/光比/主色）');
     ok(imgLock.includes('色彩：'), '图片锁缺色彩命题');
@@ -487,7 +488,7 @@ if (TABS && CRAFT) {
     ok(imgLock.includes('必须排除：'), '图片锁缺负向词');
     ok(P.utf8Bytes(imgLock) <= 2600, '图片锁超预算（' + P.utf8Bytes(imgLock) + 'B）');
     // 设定图档额外带材质响应
-    const assetsLock = await CRAFT.buildShotLockText('assets', { medium: 'image', pid: 'pVideoLock' });
+    const assetsLock = await buildPromptLock({ hereDir: ROOT, profile: profileLock, medium: 'image', kind: 'assets', pack: P });
     ok(assetsLock.includes('材质：'), '设定图档图片锁缺材质响应');
 
     // 四层负向词必须在合并后全局去重；用可替换的 pack 模块桩让每张卡返回同一短语，若有重复会立刻红
@@ -495,7 +496,7 @@ if (TABS && CRAFT) {
     try {
       const dupPack = { ...P, negativePhrases: () => ['no duplicate negative', 'no flicker'] };
       TABS.__setPackForTest(M, dupPack);
-      const dup = await CRAFT.buildShotLockText('prompt', { pid: 'pVideoLock' });
+      const dup = await buildPromptLock({ hereDir: ROOT, profile: profileLock, medium: 'video', pack: dupPack });
       eq((dup.match(/no duplicate negative/g) || []).length, 1, '跨层负向词未全局去重');
       ok((dup.match(/no flicker/g) || []).length === 1, '负向词合并后仍有重复');
 
@@ -503,7 +504,7 @@ if (TABS && CRAFT) {
       const many = Array.from({ length: 80 }, (_, i) => 'negative-phrase-' + String(i).padStart(3, '0') + '-' + 'x'.repeat(48));
       const capPack = { ...P, negativePhrases: () => many };
       TABS.__setPackForTest(M, capPack);
-      const capped = await CRAFT.buildShotLockText('prompt', { pid: 'pVideoLock' });
+      const capped = await buildPromptLock({ hereDir: ROOT, profile: profileLock, medium: 'video', pack: capPack });
       const negBlock = capped.split('\n必须排除：\n')[1] || '';
       const negBody = negBlock.split('\n')[0] || '';
       ok((negBody.match(/negative-phrase-/g) || []).length === 6, '负向词应只内联前 6 条（实际 ' + (negBody.match(/negative-phrase-/g) || []).length + '）');
@@ -514,8 +515,7 @@ if (TABS && CRAFT) {
     }
 
     // 空配置 = 完全不注入（老项目行为不变）
-    CRAFT.saveSkillProfile('pVideoEmpty', { lens: '', genres: [], form: '', look: '' });
-    eq(await CRAFT.buildShotLockText('prompt', { pid: 'pVideoEmpty' }), '', '空技能配置仍生成视频风格锁');
+    eq(await buildPromptLock({ hereDir: ROOT, profile: { lens: '', genres: [], form: '', look: '' }, medium: 'video', pack: P }), '', '空技能配置仍生成视频风格锁');
   }
 
   // 手写厂商结构化提示词是高级直通路径：保留其结构并补实体设定，但不追加风格锁

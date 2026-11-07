@@ -227,11 +227,12 @@ ok(/if \(s\.vendor\) return s\.vendor;/.test(src), '显式 vendor 优先必须�
     ok(anchor({ style: '无句读的整段风格描述' }) === '无句读的整段风格描述', '风格锚：无句读整段保留（不切割）');
     ok(anchor({ style: '' }) === '' && anchor(null) === '', '风格锚：空设定返回空');
   }
-  const i0 = src.indexOf('async function buildShotLockText');
-  const i1 = src.indexOf('async function loadModelIndex');
-  ok(i0 > 0 && i1 > i0, 'buildShotLockText 源码切片定位失败');
+  const skillSrc = readFileSync(path.join(ROOT, 'skill-pack.js'), 'utf8');
+  const i0 = skillSrc.indexOf('async function buildVideoLock');
+  const i1 = skillSrc.indexOf('export async function buildPromptLock');
+  ok(i0 > 0 && i1 > i0, 'buildVideoLock 源码切片定位失败');
   if (i0 > 0 && i1 > i0) {
-    const vlock = src.slice(i0, i1);
+    const vlock = skillSrc.slice(i0, i1);
     ok(!/yamlBlock/.test(vlock), '视频锁不得再注入透镜 YAML（导演语言已字段化进分镜）');
     ok(!/pickSections/.test(vlock), '视频锁不得倾倒教材小节全文');
     ok(!/常见场面颗粒/.test(vlock), '视频锁不得注入题材颗粒长文');

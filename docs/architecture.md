@@ -75,7 +75,7 @@ TTS 没有单独的节点类型。角色声音是视频请求里的 `audios`，�
 | 时间轴「生成全部 / 此段 / 到结尾 / 重生成失败项」 | `runNodePool` → `runGenNode` |
 | 时间轴「开始分析」 | `genAudioNode` |
 | 时间轴「生成时间轴」 | `audioBuildTimeline` |
-| 全局助手 | `canvasAssistantTurn`。窗口浮在画布左侧，可拖、可改大小、可收成一颗按钮。改字、连线、听歌、铺时间轴直接做。出图、出视频、成片、删除先出确认卡，确认后 `canvas_run_node`，浏览器再 `runGenNode`。图片、音频、视频附件进同一次全模态请求；文本模型在调用前拒绝。 |
+| 全局助手 | `canvasAssistantTurn`。窗口浮在画布左侧。听歌、铺时间轴、把角色放到画布直接做。图片、视频、语音、音乐、成片要先过 `gen-pool.js` 的 `confirmPaidJob`：助手发起的停在确认卡上，节点自己的生成按钮算确认。技能口径只有 `skill-pack.js` 一份，剧本、分镜、MV 和提示词锁都读它。 |
 | 批量并发 | `runNodePool` 只组工作项和字节，算法是 `gen-pool.js` 的 `runGenPool`。工人仍是 `runGenNode`。 |
 
 MV 的角色锁定、分镜闸门是加在这条通用路上的规则（`mvRefBlock`），不是另一套生成器。

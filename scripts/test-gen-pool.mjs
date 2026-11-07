@@ -119,6 +119,17 @@ ok(G.providerConcurrency({}, 'image') === 4 && G.providerConcurrency({}, 'video'
   ok(G.edgeBlock({ id: 'v' }, [], {}).length === 0, '没有连线也被拦住了');
   ok(G.honestSay('已生成好了', { hasAsset: false, job: { status: 'running', line: '正在生成图片' } }) === '正在生成图片', '图片还在跑时仍说生成好了');
   ok(G.mediaKind('finalcut') === 'compose' && G.mediaKind('audio') === 'analyze', '任务种类和节点对不上');
+  const blocked = G.confirmPaidJob({ kind: 'image', source: 'assistant', nodeId: 'img1', label: '角色', model: 'img-a', count: 2 });
+  ok(blocked.allow === false && blocked.needsConfirm === true && blocked.preview.count === 2 && blocked.preview.model === 'img-a', '助手出图没有停在确认');
+  ok(G.confirmPaidJob({ kind: 'image', source: 'user', nodeId: 'img1' }).allow === true, '节点上的生成按钮仍要再确认一次');
+  ok(G.confirmPaidJob({ kind: 'image', source: 'assistant', confirmed: true }).allow === true, '点了确认卡仍不放行');
+  ok(G.confirmPaidJob({ kind: 'analyze', source: 'assistant' }).allow === true, '听歌被当成付费生成拦住了');
+  ok(G.confirmPaidJob({ kind: 'tts', source: 'assistant' }).needsConfirm === true && G.confirmPaidJob({ kind: 'music', source: 'assistant' }).needsConfirm === true, '语音和音乐没有走同一条确认');
+  const held = book.open({ nodeId: 'pay', kind: 'video', source: 'assistant', label: '镜头' });
+  ok(held.needsConfirm === true && held.job == null, '未确认的助手任务仍写进了任务簿');
+  ok(book.open({ nodeId: 'pay', kind: 'video', source: 'user' }).claimed === true, '用户点击没有领到视频任务');
+  ok(G.nextMvPlanStep({ hasAudio: true, hasAnalysis: true, hasPackage: true, onCanvas: true, missingRefs: 2 }).step === 'confirm-refs', '缺设定图时没有停在确认');
+  ok(G.nextMvPlanStep({ hasAudio: true, hasAnalysis: true, hasPackage: true, onCanvas: true, missingRefs: 0, unlockedRefs: 1 }).step === 'need-lock', '没定稿就去出分镜');
 }
 
 if (errs.length) {
