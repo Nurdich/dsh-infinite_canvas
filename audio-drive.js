@@ -447,168 +447,6 @@ export function mvCreateFlow(input) {
   return { current, index: steps.findIndex((s) => s.id === current), steps };
 }
 
-const ASSISTANT_TOOLS = ['analyze', 'confirm_sections', 'set_style', 'build_timeline', 'edit_shot', 'adjust_sections', 'push', 'generate', 'compose', 'remix'];
-const ASSISTANT_CLIENT_JOBS = ['analyze', 'push', 'generate', 'compose', 'remix'];
-const ASSISTANT_SPEND = ['generate', 'compose'];
-
-export function assistantSystemPrompt() {
-  return [
-    '你是音乐 MV 节点上的助手。只根据用户这句话和当前节点状态决定下一步。',
-    '不要假设具体的歌名、故事或模型。生成图片或视频要花钱，你不能直接生成，只能提出 generate 或 compose，由系统请用户确认。',
-    '分析、改分段、确认分段、写风格、铺时间轴、改某一镜的提示词、推到画布，都不生成视频。',
-    '只返回一个 JSON：{"say":"给用户的简短说明","tool":"工具名或空字符串","args":{}}。',
-    '工具名只能是：' + ASSISTANT_TOOLS.join('、') + '。',
-    'edit_shot 的 args 用 sceneIndex（从 0 起）、shotIndex、complaint（用户原话）。',
-    'generate 的 args.scope 是 one 或 all，one 时带 sceneIndex。',
-    'set_style 的 args.style 是用户的风格原话。',
-  ].join('\n');
-}
-
-export function assistantStateDigest(state) {
-  const st = state || {};
-  const sections = (st.analysis && st.analysis.sections) || [];
-  return {
-    mode: st.mode || 'create',
-    hasAudio: !!st.hasAudio,
-    hasAnalysis: !!st.hasAnalysis,
-    confirmed: !!st.confirmed,
-    hasPackage: !!st.hasPackage,
-    styleText: st.styleText || '',
-    durationSec: st.durationSec || (st.analysis && st.analysis.durationSec) || 0,
-    sections: sections.map((s) => ({ label: s.label, startSec: s.startSec, endSec: s.endSec, cutReason: s.cutReason || '' })),
-    scenes: ((st.mvPackage && st.mvPackage.scenes) || []).map((sc, i) => ({
-      index: i,
-      title: sc.title,
-      startSec: sc.startSec,
-      endSec: sc.endSec,
-      status: sc.gen && sc.gen.status,
-      awaitingConfirm: !!sc.awaitingConfirm,
-    })),
-  };
-}
-
-function shotIndexFromMessage(text) {
-  const m = String(text || '').match(/第\s*(\d+)\s*[段镜场]/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  if (!(n >= 1)) return null;
-  return n - 1;
-}
-
-export function parseAssistantAction(modelText) {
-  if (!modelText) return null;
-  const json = extractJsonObject(String(modelText));
-  if (!json || !json.tool) return null;
-  const tool = String(json.tool);
-  if (!ASSISTANT_TOOLS.includes(tool)) return null;
-  return {
-    tool,
-    say: str(json.say, 400),
-    args: json.args && typeof json.args === 'object' ? json.args : {},
-    spends: ASSISTANT_SPEND.includes(tool),
-    clientJob: ASSISTANT_CLIENT_JOBS.includes(tool) ? tool : null,
-  };
-}
-
-export function nextAutoStep(state) {
-  const st = state || {};
-  if (!st.hasAudio) return { tool: null, spends: false, clientJob: null, say: '先上传一首歌，我再继续。' };
-  if (!st.hasAnalysis) return { tool: 'analyze', spends: false, clientJob: 'analyze', say: '我先听完整首。这一步不生成画面。' };
-  if (!st.confirmed) return { tool: 'confirm_sections', spends: false, clientJob: null, say: '分段按现在的边界确认。切开的理由写在每一段上。' };
-  if (!st.hasPackage) return { tool: 'build_timeline', spends: false, clientJob: null, args: { style: st.styleText || '' }, say: '按分析和你的风格铺时间轴，先不生成视频。' };
-  return { tool: 'generate', spends: true, clientJob: 'generate', args: { scope: 'all' }, say: '时间轴已经铺好。生成视频要花钱，请确认后再跑。' };
-}
-
-export function decideAssistantAction({ message, state, modelText }) {
-  const parsed = parseAssistantAction(modelText);
-  if (parsed && parsed.tool) return parsed;
-  const text = String(message || '').trim();
-  const st = state || {};
-  const idx = shotIndexFromMessage(text);
-  if (/自动|帮我做完|一路做|继续/.test(text)) return nextAutoStep(st);
-  if (/听歌|开始分析|分析这首|分析歌曲|分析一下/.test(text)) return { tool: 'analyze', spends: false, clientJob: 'analyze', say: '我来听整首。分析不生成画面。' };
-  if (/确认分段|分段可以|就按这个分/.test(text)) return { tool: 'confirm_sections', spends: false, clientJob: null, say: '分段按现在的边界确认。' };
-  if (/导入原片|翻拍|复刻/.test(text)) return { tool: 'remix', spends: false, clientJob: 'remix', say: '复刻需要你选原片。选好后我按切点铺，生成前会再问你。' };
-  if (idx != null && /太长|太短|不好|重做|换成|改一下|有问题|穿帮/.test(text)) {
-    return { tool: 'edit_shot', spends: false, clientJob: null, args: { sceneIndex: idx, shotIndex: 0, complaint: text }, say: '我只改第 ' + (idx + 1) + ' 段的提示词，先不生成。你确认后才重跑这一段。' };
-  }
-  if (/生成全部|全部生成|都生成/.test(text)) return { tool: 'generate', spends: true, clientJob: 'generate', args: { scope: 'all' }, say: '生成视频要花钱。' };
-  if (/合成|成片/.test(text)) return { tool: 'compose', spends: true, clientJob: 'compose', args: {}, say: '合成成片会跑视频。' };
-  if (idx != null && /生成/.test(text)) return { tool: 'generate', spends: true, clientJob: 'generate', args: { scope: 'one', sceneIndex: idx }, say: '只生成这一段，请确认。' };
-  if (/推到画布|落到画布/.test(text)) return { tool: 'push', spends: false, clientJob: 'push', say: '我把时间轴铺到画布，先不跑生成。' };
-  if (/时间轴|分镜/.test(text)) return { tool: 'build_timeline', spends: false, clientJob: null, args: { style: st.styleText || text }, say: '按当前分析和风格铺时间轴，这一步不生成视频。' };
-  if (/风格|搞笑|做成|我想要|换成/.test(text)) return { tool: 'set_style', spends: false, clientJob: null, args: { style: text }, say: '风格记下了。生成视频之前会先请你确认。' };
-  return { tool: null, spends: false, clientJob: null, say: '可以说：开始分析、确认分段、生成时间轴，或指出第几段要改。生成视频前我会先请你确认。' };
-}
-
-export function gateAssistantAction(action, opts) {
-  const confirmed = !!(opts && opts.confirmed);
-  if (!action || !action.tool) return { allow: true, needsConfirm: false, say: action && action.say };
-  if (action.spends && !confirmed) return { allow: false, needsConfirm: true, say: action.say || '这一步会生成视频，请确认。' };
-  return { allow: true, needsConfirm: false, say: action.say };
-}
-
-export function spendPreview(state, action) {
-  const scenes = (state && state.mvPackage && state.mvPackage.scenes) || [];
-  const scope = action && action.args && action.args.scope;
-  let list = scenes;
-  if (scope === 'one') {
-    const i = Number(action.args && action.args.sceneIndex) || 0;
-    list = scenes[i] ? [scenes[i]] : [];
-  }
-  const seconds = Math.round(list.reduce((s, sc) => s + (Number(sc.duration) || 0), 0) * 10) / 10;
-  return { count: list.length, seconds, scope: scope || 'all' };
-}
-
-export function applyAssistantAction(state, action) {
-  const next = JSON.parse(JSON.stringify(state || {}));
-  const a = action || {};
-  const args = a.args || {};
-  if (a.tool === 'set_style') {
-    next.styleText = str(args.style || '', 400);
-  } else if (a.tool === 'confirm_sections') {
-    if (next.analysis && next.analysis.sections) next.analysis.sections = sectionCutReasons(next.analysis.sections, next.analysis);
-    next.confirmed = true;
-    next.hasAnalysis = !!next.analysis;
-  } else if (a.tool === 'build_timeline') {
-    if (!next.analysis) throw new Error('还没有分析');
-    const style = str(args.style || next.styleText || '', 400);
-    if (style) next.styleText = style;
-    next.mvPackage = planMusicVideoPackage(next.analysis, { style: next.styleText, brief: next.styleText });
-    next.hasPackage = true;
-  } else if (a.tool === 'edit_shot') {
-    if (!next.mvPackage) throw new Error('还没有时间轴');
-    next.mvPackage = reviseShotPrompt(next.mvPackage, Number(args.sceneIndex) || 0, Number(args.shotIndex) || 0, args.complaint || '');
-  } else if (a.tool === 'adjust_sections') {
-    if (!next.analysis) throw new Error('还没有分析');
-    if (args.op === 'move') next.analysis.sections = moveSectionBoundary(next.analysis.sections, Number(args.index) || 0, args.edge === 'start' ? 'start' : 'end', args.timeSec, next.analysis.beats);
-    next.confirmed = false;
-  }
-  return next;
-}
-
-export function runMvAssistantTurn({ message, state, modelText, confirmed }) {
-  const action = decideAssistantAction({ message, state, modelText });
-  const gate = gateAssistantAction(action, { confirmed });
-  if (!gate.allow) {
-    return {
-      ok: true,
-      say: gate.say,
-      needsConfirm: true,
-      pending: action,
-      preview: action && action.spends ? spendPreview(state, action) : null,
-      executed: null,
-      state,
-    };
-  }
-  if (!action.tool) return { ok: true, say: action.say, executed: null, needsConfirm: false, state };
-  if (action.clientJob) {
-    return { ok: true, say: action.say, clientJob: action.clientJob, args: action.args || {}, executed: action.tool, needsConfirm: false, state };
-  }
-  const next = applyAssistantAction(state, action);
-  return { ok: true, say: action.say, executed: action.tool, needsConfirm: false, state: next };
-}
-
 /** 画布助手一轮里最多连续执行这么多步免费工具，避免模型死循环。 */
 export const CANVAS_ASSISTANT_MAX_STEPS = 4;
 
@@ -697,7 +535,7 @@ export function canvasToolSpecs() {
     },
   });
   return [
-    fn('canvas_create_node', '新建节点', { type: { type: 'string' }, name: { type: 'string' }, prompt: { type: 'string' } }, ['type']),
+    fn('canvas_create_node', '新建节点。assetId 用来放上用户已经附上的图片、视频或音频。', { type: { type: 'string' }, name: { type: 'string' }, prompt: { type: 'string' }, assetId: { type: 'string' } }, ['type']),
     fn('canvas_update_node', '修改已有节点的提示词或正文', { nodeId: { type: 'string' }, patch: { type: 'object' } }, ['nodeId', 'patch']),
     fn('canvas_write_node', '把正文写进文本、剧本或分镜节点', { nodeId: { type: 'string' }, text: { type: 'string' } }, ['nodeId', 'text']),
     fn('canvas_connect', '连接两个节点', { fromNode: { type: 'string' }, toNode: { type: 'string' } }, ['fromNode', 'toNode']),
@@ -721,6 +559,7 @@ export function canvasAssistantSystem() {
     '生成图片、生成视频、成片合成、删除节点必须先停下来等用户确认，不要连续调用。',
     '节点失败时先看 failure：说明原因，并按其中的改动再生成。余额不足或密钥无效不要重试。',
     '一次只调用一个工具。没有工具要调用时，用一句中文回答。',
+    '用户附上的图片、音频或视频会写在消息里，带 assetId。要把附件放进画布，用 canvas_create_node 的 assetId 建成图片、视频或音频节点，再用 canvas_connect 连到要生成的节点。',
     '摘要里的 job 是这个节点正在做的事。status 不是 done 时，不要说分析完、时间轴铺好或已经生成。工具回执写了还在进行，就原样告诉用户。',
   ].join('\n');
 }
@@ -853,8 +692,17 @@ function audioNode(digest, scopeId) {
 }
 
 /** 模型没有给出工具时的直白指令。选中节点就是「这个」。 */
-export function keywordCanvasAction(message, digest, scopeId) {
+export function keywordCanvasAction(message, digest, scopeId, attachments) {
   const text = String(message || '');
+  const files = attachments || [];
+  const img = files.find((a) => a && a.kind === 'image' && a.assetId);
+  const song = files.find((a) => a && a.kind === 'audio' && a.assetId);
+  if (img && /参考/.test(text)) {
+    return { tool: 'canvas_create_node', args: { type: 'image', name: img.name || '参考图', assetId: img.assetId }, say: '已把这张图放成节点。连到要生成的图片或视频上，生成请求会带上它的内容。' };
+  }
+  if (song && /分析|听歌|听一下/.test(text)) {
+    return { tool: 'canvas_create_node', args: { type: 'audio', name: song.name || '歌曲', assetId: song.assetId }, say: '已把这首歌放成音频节点。再说一次分析，就会听这一首。' };
+  }
   const target = selectedOrScope(digest, scopeId);
   if (/生成全部|生成当前|到结尾|分镜图|出分镜/.test(text)) {
     const audio = audioNode(digest, scopeId);
@@ -918,6 +766,20 @@ export function keywordCanvasAction(message, digest, scopeId) {
     const audio = audioNode(digest, scopeId);
     if (!audio) return { tool: '', say: '先选中音频节点。' };
     return { tool: 'canvas_music_video', args: { nodeId: audio.id }, say: '把时间轴推到画布。' };
+  }
+  const shotM = text.match(/第\s*(\d+)\s*[段镜场]/);
+  if (shotM && /太长|太短|不好|重做|换成|改一下|有问题|穿帮/.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    if (!audio) return { tool: '', say: '先选中音频节点。' };
+    return {
+      tool: 'canvas_music_timeline_edit',
+      args: { nodeId: audio.id, sceneIndex: Math.max(0, Number(shotM[1]) - 1), complaint: text },
+      say: '只改这一段的提示词，先不生成。',
+    };
+  }
+  if (/风格|搞笑/.test(text)) {
+    const audio = audioNode(digest, scopeId);
+    if (audio) return { tool: 'canvas_music_timeline', args: { nodeId: audio.id, style: text.slice(0, 200) }, say: '按这个风格铺时间轴，先不生成视频。' };
   }
   if (/生成|出图|出视频|合成|compose|generate/i.test(text)) {
     if (!target) return { tool: '', say: '先选中要运行的节点。' };
@@ -1424,15 +1286,47 @@ export function assistantPlannerRoute(provider) {
 }
 
 /**
- * 纯文本的全模态请求。不带 input_audio。
- * 合并扩展参数之后仍强制 stream=true、modalities 只有 text。
+ * 助手发给全模态的请求。图片、音频、视频跟在文字前面。
+ * 合并扩展参数之后仍强制 stream=true、modalities 只有 text（只要文字回答）。
  */
-export function buildOmniTextBody({ model, system, user, extra }) {
+/** 全模态助手能看的输入。文本模型一种都不收。 */
+export function omniInputSupport(route) {
+  if (route && route.route === 'omni') return { image: true, audio: true, video: true };
+  return { image: false, audio: false, video: false };
+}
+
+export function rejectOmniAttachments(route, attachments) {
+  const ok = omniInputSupport(route);
+  const names = { image: '图片', audio: '音频', video: '视频' };
+  const bad = (attachments || []).filter((a) => a && a.kind && !ok[a.kind]);
+  if (!bad.length) return '';
+  return '当前模型不接受' + [...new Set(bad.map((a) => names[a.kind] || a.kind))].join('、') + '。没有发送，也没有当成它看见了。';
+}
+
+/** 历史里只留资产 id，不留 data URL。 */
+export function assistantHistoryAttachments(list) {
+  return (list || []).map((a) => ({
+    kind: String((a && a.kind) || ''),
+    assetId: String((a && a.assetId) || ''),
+    name: String((a && a.name) || '').slice(0, 80),
+    mime: String((a && a.mime) || ''),
+  })).filter((a) => a.kind && a.assetId);
+}
+
+export function buildOmniTextBody({ model, system, user, extra, parts }) {
+  const content = [];
+  for (const p of parts || []) {
+    if (!p) continue;
+    if (p.kind === 'image' && p.url) content.push({ type: 'image_url', image_url: { url: p.url } });
+    else if (p.kind === 'audio' && (p.url || p.data)) content.push({ type: 'input_audio', input_audio: audioDataField(p.url || p.data, p.format || 'wav') });
+    else if (p.kind === 'video' && p.url) content.push({ type: 'video_url', video_url: { url: p.url } });
+  }
+  content.push({ type: 'text', text: String(user || '') });
   const body = {
     model: String(model || SUGGESTED_MODEL_ID).trim() || SUGGESTED_MODEL_ID,
     messages: [
       ...(system ? [{ role: 'system', content: String(system) }] : []),
-      { role: 'user', content: [{ type: 'text', text: String(user || '') }] },
+      { role: 'user', content },
     ],
     modalities: ['text'],
     stream: true,

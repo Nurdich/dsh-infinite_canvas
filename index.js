@@ -45,11 +45,10 @@ import {
   splitSectionAt,
   mergeSectionWithNext,
   sectionCutReasons,
-  assistantSystemPrompt,
-  assistantStateDigest,
-  runMvAssistantTurn,
   assistantPlannerRoute,
   buildOmniTextBody,
+  rejectOmniAttachments,
+  assistantHistoryAttachments,
   explainModelError,
   callOmniWithRetry,
   analysisOuterMaxMs,
@@ -2522,7 +2521,7 @@ function canvasCreateNode(args) {
     node = agentNode('text', '', pos.x, pos.y, label || '图片节点');
     node.type = 'image';
     node.w = mediaSize.w; node.h = mediaSize.h;
-    node.data = { ...node.data, status: 'idle', error: null, prompt, assetId: null, demo: false, size: (args && args.size) || '2K', ratio: (args && args.ratio) || '16:9', imageCount: 1 };
+    node.data = { ...node.data, status: 'idle', error: null, prompt, assetId: (args && args.assetId) ? String(args.assetId) : null, demo: false, size: (args && args.size) || '2K', ratio: (args && args.ratio) || '16:9', imageCount: 1 };
   } else if (type === 'video') {
     node = agentNode('text', '', pos.x, pos.y, label || '视频节点');
     node.type = 'video';
@@ -2541,7 +2540,7 @@ function canvasCreateNode(args) {
     } else if (!hasPrompt && sbEmpty) {
       autoConnectId = sbEmpty.id; // 分镜表存在但 shots 为空：先连线占位（生成前需先拆解镜头）
     }
-    node.data = { ...node.data, status: 'idle', error: null, prompt: autoConnectId ? '' : prompt, assetId: null, demo: false, duration: Number(args && args.duration) || 5, resolution: (args && args.resolution) || '720P', ratio: (args && args.ratio) || '16:9' };
+    node.data = { ...node.data, status: 'idle', error: null, prompt: autoConnectId ? '' : prompt, assetId: (args && args.assetId) ? String(args.assetId) : null, demo: false, duration: Number(args && args.duration) || 5, resolution: (args && args.resolution) || '720P', ratio: (args && args.ratio) || '16:9' };
     autoConnected = autoConnectId ? { from: autoConnectId, ignoredPrompt: forced && hasPrompt, emptyShots: !sbWithShots && !!sbEmpty } : null;
   } else if (type === 'storyboard') {
     node = agentNode('text', '', pos.x, pos.y, label || '分镜表');
@@ -4867,97 +4866,6 @@ export function apply(ctx) {
         else throw new Error('未知的分段操作');
         return { ok: true, sections };
       },
-      async audioAssistantTurn(args) {
-        const doc = readToolDoc(args);
-        const audio = findTypedNode(doc, args && args.nodeId, 'audio');
-        if (!audio) throw new Error('没有音频节点');
-        const data = audio.data || {};
-        const state = {
-          mode: (args && args.mode) || 'create',
-          hasAudio: !!(data.assetId),
-          hasAnalysis: !!(data.analysis && data.analysis.sections && data.analysis.sections.length),
-          confirmed: !!data.sectionsConfirmed,
-          hasPackage: !!(data.mvPackage && data.mvPackage.scenes && data.mvPackage.scenes.length),
-          styleText: data.styleText || '',
-          analysis: data.analysis || null,
-          mvPackage: data.mvPackage || null,
-          durationSec: data.durationSec || 0,
-        };
-        const passed = args && args.provider;
-        const saved = audioProviderFromConfig((args && args.audioModel) || '');
-        const provider = (passed && passed.model && passed.baseUrl && passed.apiKey) ? passed : saved;
-        const route = assistantPlannerRoute(provider);
-        let modelText = (args && args.modelText) || null;
-        let modelError = '';
-        let modelDetail = '';
-        let modelLabel = route.route === 'omni' ? route.label : '';
-        if (!modelText) {
-          const user = JSON.stringify({ message: (args && args.message) || '', state: assistantStateDigest(state) });
-          if (route.route === 'omni') {
-            // 配了音频理解就只用它。失败时不改走 Harness 默认文本模型。
-            try {
-              let extra = null;
-              try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
-              modelText = await callOmniWithRetry({
-                baseUrl: route.baseUrl,
-                apiKey: provider.apiKey,
-                body: buildOmniTextBody({ model: route.model, system: assistantSystemPrompt(), user, extra }),
-                idleMs: Number(provider.analysisIdleSec) > 0 ? Number(provider.analysisIdleSec) * 1000 : undefined,
-                progressId: args && args.progressId,
-                phase: 'assistant',
-              });
-            } catch (e) {
-              const explained = explainModelError(e, route);
-              modelError = explained.brief;
-              modelDetail = explained.detail;
-            }
-          } else {
-            try {
-              const res = await complete({ system: assistantSystemPrompt(), user, temperature: 0.2 });
-              modelText = res && res.text;
-              modelLabel = (res && res.model) ? ('文本模型 ' + res.model) : '文本模型';
-            } catch (e) {
-              const explained = explainModelError(e, { route: 'harness', label: '文本模型' });
-              modelError = explained.brief;
-              modelDetail = explained.detail;
-              modelLabel = '文本模型';
-            }
-          }
-        }
-        const turn = runMvAssistantTurn({
-          message: args && args.message,
-          state,
-          modelText,
-          confirmed: !!(args && args.confirmed),
-        });
-        if (turn.state && turn.executed && !turn.clientJob) {
-          audio.data.styleText = turn.state.styleText || audio.data.styleText || '';
-          if (turn.state.analysis) audio.data.analysis = turn.state.analysis;
-          if (turn.state.confirmed) audio.data.sectionsConfirmed = true;
-          if (turn.state.mvPackage) audio.data.mvPackage = turn.state.mvPackage;
-          doc.updatedAt = Date.now();
-          writeToolDoc(args, doc);
-          markDocChanged(String((args && args.projectId) || ''), toolCanvasId(args));
-        }
-        return {
-          ok: true,
-          say: turn.say || '',
-          needsConfirm: !!turn.needsConfirm,
-          pending: turn.pending || null,
-          preview: turn.preview || null,
-          executed: turn.executed || null,
-          clientJob: turn.clientJob || null,
-          args: turn.args || null,
-          modelError,
-          modelDetail,
-          modelLabel,
-          planner: route.route,
-          styleText: audio.data.styleText || '',
-          sectionsConfirmed: !!audio.data.sectionsConfirmed,
-          analysis: audio.data.analysis || null,
-          package: audio.data.mvPackage || null,
-        };
-      },
       async canvasAssistantTurn(args) {
         const doc = readToolDoc(args);
         const selection = Array.isArray(args && args.selection) ? args.selection.map(String) : [];
@@ -4967,6 +4875,17 @@ export function apply(ctx) {
         const provider = (passed && passed.model && passed.baseUrl && passed.apiKey) ? passed : saved;
         const route = assistantPlannerRoute(provider);
         const userMsg = String((args && args.message) || '').slice(0, 2000);
+        const attachments = Array.isArray(args && args.attachments) ? args.attachments : [];
+        const keptFiles = assistantHistoryAttachments(attachments);
+        const fileNote = keptFiles.map((a) => a.kind + '「' + (a.name || a.assetId) + '」assetId=' + a.assetId).join('；');
+        const userForModel = userMsg + (fileNote ? '\n附件：' + fileNote : '');
+        const mediaParts = attachments.map((a) => ({
+          kind: a && a.kind,
+          url: (a && (a.url || a.dataUrl)) || '',
+          data: (a && a.data) || '',
+          format: (a && a.format) || '',
+        }));
+        const refused = rejectOmniAttachments(route, attachments);
         const confirmed = !!(args && args.confirmed);
         const history = Array.isArray(doc.assistantChat) ? doc.assistantChat.slice(-30) : [];
         const steps = [];
@@ -5008,6 +4927,8 @@ export function apply(ctx) {
               say = '执行失败：' + String((e && e.message) || e);
             }
           }
+        } else if (refused) {
+          say = refused;
         } else {
           const done = [];
           for (let step = 0; step < CANVAS_ASSISTANT_MAX_STEPS; step++) {
@@ -5016,11 +4937,11 @@ export function apply(ctx) {
             let native = false;
             if (route.route === 'omni') {
               const system = canvasAssistantSystem() + '\n画布摘要：' + JSON.stringify(digest).slice(0, 6000);
-              const user = userMsg + (done.length ? '\n已执行：' + JSON.stringify(done).slice(0, 1500) : '');
+              const user = userForModel + (done.length ? '\n已执行：' + JSON.stringify(done).slice(0, 1500) : '');
               let extra = null;
               try { extra = provider.extra && typeof provider.extra === 'string' ? JSON.parse(provider.extra) : (provider.extra || null); } catch { extra = null; }
               try {
-                const body = buildOmniTextBody({ model: route.model, system, user, extra });
+                const body = buildOmniTextBody({ model: route.model, system, user, extra, parts: mediaParts });
                 body.tools = canvasToolSpecs();
                 body.tool_choice = 'auto';
                 const turn = await callOmniWithRetry({
@@ -5047,6 +4968,7 @@ export function apply(ctx) {
                       system,
                       user: user + '\n只回复一个 JSON：{"say":"","tool":"","args":{}}。tool 必须是已有 canvas_ 工具名，没有动作时留空。',
                       extra,
+                      parts: mediaParts,
                     });
                     const turn = await callOmniWithRetry({
                       baseUrl: route.baseUrl,
@@ -5080,7 +5002,7 @@ export function apply(ctx) {
               try {
                 const r = await complete({
                   system: canvasAssistantSystem(),
-                  user: userMsg + '\n画布摘要：' + JSON.stringify(digest).slice(0, 4000)
+                  user: userForModel + '\n画布摘要：' + JSON.stringify(digest).slice(0, 4000)
                     + '\n只回复一个 JSON：{"say":"","tool":"","args":{}}。tool 必须是已有 canvas_ 工具名，没有动作时留空。',
                 });
                 modelText = (r && r.text) || '';
@@ -5091,7 +5013,7 @@ export function apply(ctx) {
               }
             }
             let action = parseCanvasAction(raw) || parseCanvasAction(modelText);
-            if (!action && step === 0) action = keywordCanvasAction(userMsg, digest, scopeId);
+            if (!action && step === 0) action = keywordCanvasAction(userMsg, digest, scopeId, keptFiles);
             if (action && action.clientJob && !action.tool) {
               const gate = gateCanvasAction(action, { confirmed: false, digest, modelLabel: route.label });
               if (!gate.allow) {
@@ -5140,7 +5062,7 @@ export function apply(ctx) {
           steps,
         });
         const chat = history.concat([
-          { role: 'user', text: userMsg, at: Date.now() },
+          { role: 'user', text: userMsg, attachments: keptFiles, at: Date.now() },
           {
             role: 'assistant',
             text: say,
@@ -5154,7 +5076,7 @@ export function apply(ctx) {
             modelLabel: route.label,
             at: Date.now(),
           },
-        ]).filter((m) => m && (m.text || (m.steps && m.steps.length))).slice(-40);
+        ]).filter((m) => m && (m.text || (m.attachments && m.attachments.length) || (m.steps && m.steps.length))).slice(-40);
         fresh.assistantChat = chat;
         writeToolDoc(args, fresh);
         return {
