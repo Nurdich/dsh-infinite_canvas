@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import * as DshMedia from '../gen-pool.js';
 import { Writable } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
@@ -147,6 +148,7 @@ const sandbox = {
   alert: noop, confirm: () => false, prompt: () => null,
 };
 sandbox.globalThis = sandbox;
+sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
 vm.createContext(sandbox);
 const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
 let mod = null;

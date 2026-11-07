@@ -54,47 +54,19 @@ function revealCanvasInRight() {
     // 已由 IC-02 删除；audit.mjs 会断言它不会复活。
 
     // 每类节点的端口定义（kind: text | image | video）
-    const PORTS = {
-      'text': { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
-      'shot': {
-        inputs: [
-          { id: 'char', kind: 'image' },
-          { id: 'scene', kind: 'image' },
-          { id: 'prop', kind: 'image' },
-        ],
-        outputs: [{ id: 'visual', kind: 'text' }, { id: 'motion', kind: 'text' }],
-      },
-      'script': { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
-      'storyboard': {
-        // 承接端口（按数组顺序自上而下排布）：顶部「衔接上一镜」← 上一个分镜表的「尾镜」输出
-        // music：音频节点的分析文本（MV 分镜按拍点铺，而不是按剧本文本）
-        inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }, { id: 'music', kind: 'text' }],
-        outputs: [{ id: 'out', kind: 'text' }, { id: 'tail', kind: 'text' }],
-      },
-      'audio': {
-        // out = 原曲（成片声轨）；analysis = 结构化听歌结果（给分镜表）
-        inputs: [],
-        outputs: [{ id: 'out', kind: 'audio' }, { id: 'analysis', kind: 'text' }],
-      },
-      'image': {
-        // 合并类型：旧的「图片生成」与「图片资产」两种节点归一到这里。
-        // 有 assetId 就是已有图（资产），有 prompt 就是待生成的提示词——同一个节点两种状态。
-        inputs: [{ id: 'prompt', kind: 'text' }, { id: 'ref', kind: 'image' }],
-        outputs: [{ id: 'out', kind: 'image' }],
-      },
-      'video': {
-        // 合并类型：旧的「视频生成」与「视频资产」两种节点归一到这里。
-        inputs: [{ id: 'prompt', kind: 'text' }, { id: 'frame', kind: 'image' }, { id: 'ref', kind: 'image' }],
-        // last = 真·最后一帧（画面结尾）；tailpick = 续帧接力的最佳选帧（动作进行中/清晰/不抖）
-        outputs: [{ id: 'out', kind: 'video' }, { id: 'tailpick', kind: 'image' }, { id: 'last', kind: 'image' }],
-      },
-      'finalcut': { inputs: [{ id: 'in', kind: 'video' }, { id: 'music', kind: 'audio' }], outputs: [] },
-      'group': { inputs: [], outputs: [] },
-    };
-    // 旧节点类型 → 合并类型。旧项目文档在读入时统一归一（loadGraphDoc / mergeHostDoc / importHostProject），
-    // 节点 data 一律原样保留：有 assetId 就是"已有图/视频"，有 prompt 就是"有提示词"。
-    const LEGACY_NODE_TYPES = { 'image-gen': 'image', 'image-asset': 'image', 'video-gen': 'video', 'video-asset': 'video' };
-    function normalizeNodeType(type) { return LEGACY_NODE_TYPES[type] || type; }
+    function loadMediaTables() {
+      if (window.__DSH_IC_GEN_POOL__) return window.__DSH_IC_GEN_POOL__;
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', '/infinite-canvas/api/plugin-asset?rel=gen-pool.js', false);
+      xhr.send(null);
+      if (xhr.status !== 200) throw new Error('生成池加载失败 HTTP ' + xhr.status);
+      const code = String(xhr.responseText || '').replace(/^export /gm, '');
+      return new Function(code + '\nreturn { PORTS, LEGACY_NODE_TYPES, normalizeNodeType, missingRefsForShot, defaultGenConcurrency, clampGenConcurrency, providerConcurrency, isRateLimitError, videoDeps, createAimd, runGenPool };')();
+    }
+    const Media = loadMediaTables();
+    const PORTS = Media.PORTS;
+    const normalizeNodeType = Media.normalizeNodeType;
+    const missingRefsForShot = Media.missingRefsForShot;
     function normalizeNode(n) {
       if (n && typeof n === 'object') {
         const t = normalizeNodeType(n.type);
@@ -11493,157 +11465,6 @@ function queueThumb(assetId) {
     }
 
     let genAimd = null;
-    function defaultGenConcurrency(kind) { return kind === 'video' ? 2 : 4; }
-    function clampGenConcurrency(value, kind) {
-      const n = Number(value);
-      const fallback = defaultGenConcurrency(kind);
-      if (!Number.isFinite(n) || n < 1) return fallback;
-      return Math.max(1, Math.min(8, Math.round(n)));
-    }
-    function providerConcurrency(provider, kind) {
-      const p = provider || {};
-      if (p.concurrency != null && String(p.concurrency).trim() !== '') return clampGenConcurrency(p.concurrency, kind);
-      let extra = p.extra;
-      if (typeof extra === 'string' && extra.trim()) {
-        try { extra = JSON.parse(extra); } catch { extra = null; }
-      }
-      if (extra && typeof extra === 'object') {
-        const n = extra.concurrency || extra.parallel || extra.maxConcurrency;
-        if (n != null && String(n).trim() !== '') return clampGenConcurrency(n, kind);
-      }
-      return defaultGenConcurrency(kind);
-    }
-    function isRateLimitError(err) {
-      const status = Number(err && err.status) || 0;
-      const msg = String((err && err.message) || err || '');
-      return status === 429 || /429|rate limit|too many requests/i.test(msg);
-    }
-    function videoDeps(items) {
-      const list = items || [];
-      return list.map((item, i) => {
-        const prev = i > 0 ? list[i - 1] : null;
-        const chained = !!(item && (item.continued || item.join === 'continuous'));
-        return { id: item.id, waitFor: chained && prev ? prev.id : null, item };
-      });
-    }
-    function createAimd(limit) {
-      const max = Math.max(1, Number(limit) || 1);
-      let current = max;
-      let backoffMs = 1000;
-      let until = 0;
-      let streak = 0;
-      return {
-        limit() { return current; },
-        pauseUntil() { return until; },
-        onRateLimit(now) {
-          current = Math.max(1, Math.floor(current / 2));
-          backoffMs = Math.min(30000, Math.max(1000, backoffMs * 2));
-          until = (now == null ? Date.now() : now) + backoffMs;
-          streak = 0;
-          return { limit: current, backoffMs, pauseUntil: until };
-        },
-        onSuccess() {
-          streak += 1;
-          if (streak >= 2 && current < max) { current += 1; streak = 0; backoffMs = 1000; }
-          return current;
-        },
-      };
-    }
-    async function runGenPool(items, worker, opts) {
-      const options = opts || {};
-      const cap = Math.max(1, Number(options.concurrency) || 4);
-      const aimd = options.aimd || createAimd(cap);
-      const isRate = options.isRateLimit || isRateLimitError;
-      const now = () => (options.now ? options.now() : Date.now());
-      const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-      const signal = options.signal;
-      const onState = options.onState || (() => {});
-      const list = (items || []).map((item, i) => ({
-        id: item && item.id != null ? item.id : String(i),
-        item,
-        waitFor: item && item.waitFor || null,
-        state: 'queued',
-        rateTries: 0,
-      }));
-      const byId = new Map(list.map((t) => [t.id, t]));
-      const results = [];
-      let active = 0;
-      let launching = false;
-      const snapshot = (task) => onState({
-        id: task && task.id, state: task && task.state, active,
-        limit: Math.min(cap, aimd.limit()),
-        done: results.filter((r) => r.ok).length,
-        failed: results.filter((r) => !r.ok).length,
-        total: list.length,
-      });
-      function failDependents(id, error) {
-        for (const t of list) {
-          if (t.waitFor !== id || t.state !== 'queued') continue;
-          t.state = 'failed';
-          results.push({ id: t.id, ok: false, error });
-          snapshot(t);
-          failDependents(t.id, error);
-        }
-      }
-      function readyTasks() {
-        return list.filter((t) => {
-          if (t.state !== 'queued') return false;
-          if (!t.waitFor) return true;
-          const dep = byId.get(t.waitFor);
-          return !!(dep && dep.state === 'done');
-        });
-      }
-      async function launch() {
-        if (launching) return;
-        launching = true;
-        try {
-          while (true) {
-            if (signal && signal.aborted) {
-              for (const t of list) if (t.state === 'queued') { t.state = 'cancelled'; results.push({ id: t.id, ok: false, error: new Error('cancelled') }); snapshot(t); }
-              return;
-            }
-            const limit = Math.min(cap, aimd.limit());
-            if (active >= limit) return;
-            if (aimd.pauseUntil() > now()) {
-              const wait = aimd.pauseUntil() - now();
-              launching = false;
-              await sleep(wait);
-              return launch();
-            }
-            const ready = readyTasks();
-            if (!ready.length) return;
-            const task = ready[0];
-            task.state = 'running';
-            active += 1;
-            snapshot(task);
-            worker(task.item).then(
-              (value) => { task.state = 'done'; results.push({ id: task.id, ok: true, value }); aimd.onSuccess(); },
-              (error) => {
-                if (isRate(error) && task.rateTries < 2 && !(signal && signal.aborted)) {
-                  task.rateTries += 1;
-                  task.state = 'queued';
-                  aimd.onRateLimit(now());
-                  return;
-                }
-                task.state = 'failed';
-                results.push({ id: task.id, ok: false, error });
-                failDependents(task.id, error);
-              },
-            ).finally(() => { active -= 1; snapshot(task); launch(); });
-          }
-        } finally { launching = false; }
-      }
-      if (!list.length) return { results: [], limit: cap };
-      await launch();
-      await new Promise((resolve) => {
-        const tick = () => {
-          if (!list.some((t) => t.state === 'queued' || t.state === 'running')) resolve();
-          else setTimeout(tick, 15);
-        };
-        tick();
-      });
-      return { results, limit: aimd.limit() };
-    }
     function videoWorkItems(list) {
       const sorted = (list || []).slice().sort((a, b) => (a.data.mvIndex || 0) - (b.data.mvIndex || 0));
       const rows = sorted.map((nd) => {
@@ -11651,7 +11472,7 @@ function queueThumb(assetId) {
         const sc = audio && audio.data && audio.data.mvPackage && audio.data.mvPackage.scenes && audio.data.mvPackage.scenes[nd.data.mvIndex];
         return { id: nd.id, continued: !!(sc && (sc.continued || sc.join === 'continuous')), join: sc && sc.join, node: nd };
       });
-      return videoDeps(rows).map((d) => ({ id: d.id, waitFor: d.waitFor, node: rows.find((r) => r.id === d.id).node }));
+      return Media.videoDeps(rows).map((d) => ({ id: d.id, waitFor: d.waitFor, node: rows.find((r) => r.id === d.id).node }));
     }
     async function runNodePool(list, kind, label) {
       if (!list || !list.length) return;
@@ -11660,16 +11481,16 @@ function queueThumb(assetId) {
       const cfg = kind === 'video'
         ? resolveVideoModelCfg(settings, nodeVideoModelRef(sample))
         : resolveImageModelCfg(settings, nodeImageModelRef(sample));
-      const conc = providerConcurrency(cfg, kind);
+      const conc = Media.providerConcurrency(cfg, kind);
       const ctl = new AbortController();
       genAbort.ctl = ctl;
-      genAimd = createAimd(conc);
+      genAimd = Media.createAimd(conc);
       const items = kind === 'video'
         ? videoWorkItems(list)
         : list.map((nd) => ({ id: nd.id, waitFor: null, node: nd }));
       update((s) => { s.batchLive = { total: items.length, done: 0, active: 0, failed: 0, label: label || '' }; });
       try {
-        await runGenPool(items, (item) => runGenNode(item.node), {
+        await Media.runGenPool(items, (item) => runGenNode(item.node), {
           concurrency: conc,
           aimd: genAimd,
           signal: ctl.signal,
@@ -11693,20 +11514,6 @@ function queueThumb(assetId) {
         shotIndex: nd.data.shotIndex,
         id: nd.id,
       }));
-    }
-    function missingRefsForShot(shot, states) {
-      const missing = [];
-      for (const name of ((shot && shot.characters) || [])) {
-        const row = (states || []).find((s) => s.role === 'char' && s.name === name);
-        if (!row || !row.assetId) missing.push({ role: 'char', name, why: 'missing' });
-        else if (!row.locked) missing.push({ role: 'char', name, why: 'unlocked' });
-      }
-      if (shot && shot.scene) {
-        const row = (states || []).find((s) => s.role === 'loc' && s.name === shot.scene);
-        if (!row || !row.assetId) missing.push({ role: 'loc', name: shot.scene, why: 'missing' });
-        else if (!row.locked) missing.push({ role: 'loc', name: shot.scene, why: 'unlocked' });
-      }
-      return missing;
     }
     function applyVideoFit(frameBlob, refs, spec) {
       const plan = spec || {};
@@ -11736,7 +11543,7 @@ function queueThumb(assetId) {
         for (const id of ids) {
           const nd = s.graph.nodes[id];
           if (!nd || !nd.data) continue;
-          if (nd.type === 'image' || nd.type === 'video' || nd.type === 'finalcut' || nd.data.mvRole === 'shot' || nd.data.mvRole === 'video') {
+          if (nd.type === 'image' || nd.type === 'video' || nd.type === 'finalcut') {
             nd.data.needRegen = true;
             if (nd.type === 'video') nd.data.mvStale = true;
           }

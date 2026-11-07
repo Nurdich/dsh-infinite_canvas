@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import * as DshMedia from '../gen-pool.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -152,6 +153,7 @@ const sandbox = {
 };
 sandbox.window.localStorage = localStorageStub;
 sandbox.globalThis = sandbox;
+sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
 vm.createContext(sandbox);
 
 // ---------------- 组件树遍历 ----------------

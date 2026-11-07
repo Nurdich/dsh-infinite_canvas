@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import * as DshMedia from '../gen-pool.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -122,7 +123,8 @@ function loadClient() {
     alert: noop, confirm: () => false, prompt: () => null,
   };
   sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
+  sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
+vm.createContext(sandbox);
   let pluginMod = null;
   sandbox.window.__ModuleLoader__ = { load(def) { pluginMod = def; } };
   vm.runInContext(src, sandbox, { filename: 'client.js' });

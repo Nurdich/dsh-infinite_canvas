@@ -3,6 +3,7 @@
 // 套路同 test-drag-alt.mjs：假 React + 桩 DOM 在 vm 里加载 client.js，经冒烟缝隙取纯函数。
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import * as DshMedia from '../gen-pool.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,6 +65,7 @@ const sandbox = {
   alert: noop, confirm: () => false, prompt: () => null,
 };
 sandbox.globalThis = sandbox;
+sandbox.window.__DSH_IC_GEN_POOL__ = DshMedia;
 vm.createContext(sandbox);
 let mod = null;
 sandbox.window.__ModuleLoader__ = { load(def) { mod = def; } };

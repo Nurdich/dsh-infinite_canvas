@@ -253,6 +253,51 @@ export function mergeDocWrite(fresh, incoming) {
   };
 }
 
+export const LEGACY_NODE_TYPES = { 'image-gen': 'image', 'image-asset': 'image', 'video-gen': 'video', 'video-asset': 'video' };
+
+export function normalizeNodeType(type) { return LEGACY_NODE_TYPES[type] || type; }
+
+/** 端口表。宿主连线和浏览器画布用这一份。 */
+export const PORTS = {
+  text: { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
+  shot: {
+    inputs: [{ id: 'char', kind: 'image' }, { id: 'scene', kind: 'image' }, { id: 'prop', kind: 'image' }],
+    outputs: [{ id: 'visual', kind: 'text' }, { id: 'motion', kind: 'text' }],
+  },
+  script: { inputs: [], outputs: [{ id: 'out', kind: 'text' }] },
+  storyboard: {
+    inputs: [{ id: 'prev', kind: 'text' }, { id: 'script', kind: 'text' }, { id: 'music', kind: 'text' }],
+    outputs: [{ id: 'out', kind: 'text' }, { id: 'tail', kind: 'text' }],
+  },
+  audio: { inputs: [], outputs: [{ id: 'out', kind: 'audio' }, { id: 'analysis', kind: 'text' }] },
+  image: { inputs: [{ id: 'prompt', kind: 'text' }, { id: 'ref', kind: 'image' }], outputs: [{ id: 'out', kind: 'image' }] },
+  video: {
+    inputs: [{ id: 'prompt', kind: 'text' }, { id: 'frame', kind: 'image' }, { id: 'ref', kind: 'image' }],
+    outputs: [{ id: 'out', kind: 'video' }, { id: 'tailpick', kind: 'image' }, { id: 'last', kind: 'image' }],
+  },
+  finalcut: { inputs: [{ id: 'in', kind: 'video' }, { id: 'music', kind: 'audio' }], outputs: [] },
+  group: { inputs: [], outputs: [] },
+};
+
+/** 分镜要等角色和场景都有图并且定稿。MV 的锁定规则，不是另一套出图。 */
+export function missingRefsForShot(shot, states) {
+  const s = shot || {};
+  const characters = Array.isArray(s.characters) ? s.characters.map((n) => String(n || '').trim()).filter(Boolean) : [];
+  const scene = String(s.scene || '').trim();
+  const missing = [];
+  for (const name of characters) {
+    const row = (states || []).find((row) => row && row.role === 'char' && row.name === name);
+    if (!row || !row.assetId) missing.push({ role: 'char', name, why: 'missing' });
+    else if (!row.locked) missing.push({ role: 'char', name, why: 'unlocked' });
+  }
+  if (scene) {
+    const row = (states || []).find((row) => row && row.role === 'loc' && row.name === scene);
+    if (!row || !row.assetId) missing.push({ role: 'loc', name: scene, why: 'missing' });
+    else if (!row.locked) missing.push({ role: 'loc', name: scene, why: 'unlocked' });
+  }
+  return missing;
+}
+
 /** 一个节点同一种任务只保留一条。第二次进来是加入，不是再开一条。 */
 export function createJobBook() {
   const jobs = new Map();
@@ -361,8 +406,9 @@ export function decideAnalyze(input) {
   const job = o.job;
   if (job && (job.status === 'running' || job.status === 'queued') && !o.force) return { action: 'join', job };
   if (o.hasAnalysis && !o.force) return { action: 'cached' };
-  if (o.hasEnergy || o.hasAudioBase64 || o.hasDuration) return { action: 'run-here' };
+  if (o.hasEnergy || o.hasAudioBase64) return { action: 'local' };
   if (o.hasAsset) return { action: 'queue-client' };
+  if (o.hasDuration) return { action: 'local' };
   return { action: 'missing-file' };
 }
 

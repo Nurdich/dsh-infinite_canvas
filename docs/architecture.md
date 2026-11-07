@@ -14,7 +14,7 @@
 | `skills.js` | 把 `skills/*/SKILL.md` 注册给 Harness。 |
 | `assets/director/engine.js` | 3D 导演台，浏览器按需加载，不参与出图。 |
 
-`client.js` 不能 `import` 宿主模块。以前因此把同一段函数在浏览器里再抄一份。参考图怎么裁、图片字段叫什么，已经改成问宿主的 `mediaFit`，浏览器里的那份删掉了。并发池仍留在浏览器里，因为工人要在浏览器里拿图片字节；算法的另一份在 `gen-pool.js`，测试锁的是那一份。
+`client.js` 不能 `import`。端口表、旧类型名、分镜锁定判定、并发池算法只写在 `gen-pool.js`。浏览器启动时同步取出这一份（测试里注入 `window.__DSH_IC_GEN_POOL__`，页面上从 `/infinite-canvas/api/plugin-asset?rel=gen-pool.js` 读取）。工人仍在浏览器里跑，因为图片字节在浏览器里。
 
 ## 宿主和浏览器
 
@@ -32,7 +32,7 @@
 
 一个项目一份文档，子画布是 `项目id::画布id`。文档里有 `nodes`、`edges`、`view`、`tombstones`、`bible`、`assistantChat`、`skillProfile`。
 
-节点类型和端口（`client.js` 的 `PORTS`，宿主 `PORT_TABLE` 同一张表）：
+节点类型和端口（只在 `gen-pool.js` 的 `PORTS`）：
 
 | 类型 | 输入 | 输出 | 生成时看的字段 |
 | --- | --- | --- | --- |
@@ -56,7 +56,7 @@
 
 - `script` → `genScriptNode`：`/api/llm-stream` 或宿主 `complete`。
 - `storyboard` → `genStoryboardNode`：同上；若连了音频分析，改走 `audioPlanStoryboard`。
-- `audio` → `genAudioNode`：本地解码、分窗、每窗 `audio-understand`，再 `audioMergeAnalyses`。进度在 `audioProgress`。
+- `audio` → `genAudioNode`：唯一的听歌实现。本地解码、分窗、每窗 `POST /api/audio-understand`（里面才调全模态），再 `audioMergeAnalyses`。助手的 `canvas_analyze_audio` 不再自己调全模态：进行中就加入，节点里有歌就排队给这一次，只有调用方直接给了能量曲线才写本地节拍。
 - `finalcut` → `genFinalCutNode` → `composeFinalCut`：浏览器里合成，不打厂商。
 - `image` → `collectRefs`（只取 `ref` 口）→ `apiImage`。
 - `video` → `collectRefs` 加首帧 → `apiVideo`。
@@ -76,7 +76,7 @@ TTS 没有单独的节点类型。角色声音是视频请求里的 `audios`，�
 | 时间轴「开始分析」 | `genAudioNode` |
 | 时间轴「生成时间轴」 | `audioBuildTimeline` |
 | 全局助手 | `canvasAssistantTurn`。改字、连线、听歌、铺时间轴直接做。出图、出视频、成片、删除先出确认卡，确认后 `canvas_run_node`，浏览器再 `runGenNode`。 |
-| 批量并发 | `gen-pool.js` 的算法；浏览器里的 `runNodePool` 调用它的同形实现，工人仍是 `runGenNode`。 |
+| 批量并发 | `runNodePool` 只组工作项和字节，算法是 `gen-pool.js` 的 `runGenPool`。工人仍是 `runGenNode`。 |
 
 MV 的角色锁定、分镜闸门是加在这条通用路上的规则（`mvRefBlock`），不是另一套生成器。
 
@@ -88,19 +88,16 @@ MV 的角色锁定、分镜闸门是加在这条通用路上的规则（`mvRefBl
 - 听歌的流式文字仍在 `audio-drive.js` 的 `openOmniProgress`。浏览器把窗口、已用时间和「正在连接 / 仍在接收 / 等待下一段」写进任务的 `line`。没有字节时是「正在连接」，不是「正在分析完」。
 - 助手每轮先看摘要里的 `job`。工具回执若是 `inProgress`，对用户说的是回执原文，不是模型自己说的「已经做好了」。`honestSay` 再对一遍：嘴上说完成，文档里却没有分析、时间轴或成片，就把这句话换成任务的那一句。
 
-## 这次对上之前，重复和各说各话在哪
+## 已经删掉的第二份
 
-这些是读代码时对上的，行号按收口前的位置：
+- 宿主整首再调一次全模态。听歌只剩浏览器分窗，经 `/api/audio-understand` 进 `understandFromRequest`。
+- 浏览器里的并发池、`videoDeps`、`createAimd`。算法只在 `gen-pool.js`。
+- `PORTS` / `PORT_TABLE`、旧类型名映射、`missingRefsForShot` 的第二份和第三份。只留 `gen-pool.js`。
+- 浏览器里的 `videoConditionPlan` / `imageRefPayload`。裁切只在 `audio-drive.js`，浏览器问 `mediaFit`。
 
-- 听歌有两条。节点走 `client.js` `genAudioNode`。助手的 `canvas_analyze_audio` 在宿主里再调 `understandFromRequest`。宿主文档上还没有分析时，时间轴工具报「先上传歌曲并分析」，即使用户节点里已经有歌、节点按钮正在听。
-- 助手说「已执行」用的是模型写在动作里的 `say`，不看工具回执。所以节点还停在「正在听 1/3 · 正在连接」时，侧栏可以写「歌曲已经分析完，时间轴也铺好了」。
-- `videoConditionPlan`、`imageRefPayload`、`fitVideoImages` 在 `audio-drive.js` 和 `client.js` 各有一份。
-- `createAimd`、`runGenPool`、`videoDeps`、`isRateLimitError` 在 `gen-pool.js` 和 `client.js` 各有一份。浏览器不能引用宿主模块，工人循环仍留在 `client.js`。参考图裁切那一份已经删掉。
-- `missingRefsForShot` 在 `audio-drive.js` 和 `client.js` 各有一份。MV 的锁定规则还在浏览器里，因为判定要看当前画面上的节点。
-- `PORTS` 和 `PORT_TABLE`、`normalizeNodeType`、媒体框尺寸，两边各写一份，测试和注释要求它们一致。
-- 连了参考图但上游没有成图时，以前只有 MV 分镜会拦住。别的图片节点会跳过那条线，只靠文字出图。
-- 上游重新生成后，只有 MV 的分镜和视频会被标成需重生成。
+## 还各写各的，以及原因
 
-## 收口以后
-
-没有新文件。任务登记放进已有的 `gen-pool.js`。宿主的听歌、铺时间轴、`canvas_run_node` 和助手收尾都问它。浏览器的 `genAudioNode` 和 `runGenNode` 用 `jobOpen` 领取或加入。参考图的裁切只留在 `audio-drive.js`，浏览器调用 `mediaFit`。连着的图口没有成图，任何图片或视频节点都会停。上游成图更新后，下游图片、视频和成片标成需重生成。
+- 各视频厂商的请求体和响应字段。轮询和退避已经共用 `vendorPoll`。每家的鉴权、URL 和字段对不上，收成一张表会把差异藏进更难核对的配置，所以请求映射仍写在各自的 runner 里。
+- 图片的 `compshare` / `sanbao` 任务式和通用 `/images/generations`。协议不同，没有第二套轮询算法；`sanbao` 的查询状态函数是测试在用的那一份。
+- 媒体节点外框尺寸（`NODE_HDR_H` 等）宿主和浏览器各有一组常量。改一边必须改另一边，注释里写了这条。抽走会让建点几何依赖一次网络读取，旧文档打开会闪。
+- 配音没有单独节点。角色声音是视频请求里的 `audios`，来自 `@` 提到的音频资产。没有再做一个 TTS 产品。

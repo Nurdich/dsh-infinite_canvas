@@ -113,7 +113,7 @@ ok(G.providerConcurrency({}, 'image') === 4 && G.providerConcurrency({}, 'video'
   ok(again.joined === true, '领走之后宿主又开了一次听歌');
   ok(G.decideAnalyze({ job: again.job, hasAsset: true }).action === 'join', '有进行中的听歌时决定函数仍要再听');
   ok(G.decideAnalyze({ job: null, hasAsset: true }).action === 'queue-client', '歌在节点上时仍要在宿主再听一遍');
-  ok(G.decideAnalyze({ job: null, hasEnergy: true }).action === 'run-here', '带能量曲线的离线分析不能做');
+  ok(G.decideAnalyze({ job: null, hasEnergy: true }).action === 'local', '带能量曲线的离线分析不能做');
   const miss = G.edgeBlock({ id: 'v' }, [{ toNode: 'v', fromNode: 'i', toPort: 'ref' }], { i: { id: 'i', data: {} } });
   ok(miss.length === 1 && /没有生成结果/.test(G.edgeBlockSay(miss)), '空的参考连线没有拦住');
   ok(G.edgeBlock({ id: 'v' }, [], {}).length === 0, '没有连线也被拦住了');
